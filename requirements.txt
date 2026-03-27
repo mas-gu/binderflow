@@ -1,0 +1,5 @@
+# Host environment (boltz conda env) requirements
+numpy>=1.24
+matplotlib>=3.7
+gemmi>=0.6
+plip>=2.3.0
