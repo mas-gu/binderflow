@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 University of Basel, Biozentrum
+# Copyright (c) 2026 Guillaume Mas
+# Author: Guillaume Mas
 # SPDX-License-Identifier: MIT
 """
 generate_binders.py — Multi-tool binder design pipeline.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 University of Basel, Biozentrum
+# Copyright (c) 2026 Guillaume Mas
+# Author: Guillaume Mas
 # SPDX-License-Identifier: MIT
 """
 rerank_binders.py — Re-validate and re-rank existing design outputs.

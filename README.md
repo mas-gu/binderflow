@@ -1,5 +1,7 @@
 # binderflow
 
+**Author:** Guillaume Mas
+
 A unified pipeline for de novo protein binder design using six complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
 
 ## Overview
