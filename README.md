@@ -278,7 +278,7 @@ Design (6 tools) → ESMFold filter (pLDDT ≥ 70) → Boltz-2 batch prediction
 
 ## K+E Composition Analysis
 
-High lysine (K) + glutamate (E) content in designed binders correlates with poor expression in experimental validation. The pipeline computes K+E metrics for all designs automatically.
+High lysine (K) + glutamate (E) content in designed binders correlates with poor binding in experimental validation. The pipeline computes K+E metrics for all designs automatically.
 
 **Metrics added to `rankings.csv`:**
 - `binder_KE_fraction` — fraction of K + E residues (0-1)
@@ -287,7 +287,7 @@ High lysine (K) + glutamate (E) content in designed binders correlates with poor
 
 **Reranking log output** includes per-tool K+E summary:
 ```
-K+E composition by tool (high K+E = expression risk):
+K+E composition by tool (high K+E = poor binding risk):
   boltzgen                mean=18%  max=24%  (n=50)
   bindcraft               mean=42%  max=47%  (n=5)   ** 5 above 25%
   proteina                mean=40%  max=62%  (n=20)  ** 15 above 25%
@@ -295,9 +295,9 @@ K+E composition by tool (high K+E = expression risk):
 ```
 
 **Guidelines:**
-- < 20% K+E: good for expression
+- < 20% K+E: good for binding
 - 20-25% K+E: acceptable
-- \> 25% K+E: expression risk — flag for review
+- \> 25% K+E: poor binding risk — flag for review
 
 **Per-tool observations:**
 - **BoltzGen**: cleanest (16-20% typical)
