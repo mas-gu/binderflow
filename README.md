@@ -4,7 +4,8 @@
 
 A unified pipeline for de novo protein binder design using six complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
 
-<img width="5014" height="1082" alt="pipeline_overview" src="https://github.com/user-attachments/assets/62e1dfd4-220c-4115-99b3-cf2bd9bd82a5" />
+<img width="4223" height="1082" alt="pipeline_overview" src="https://github.com/user-attachments/assets/760d0e48-10fa-4f15-a3c5-87b9c4a9e28d" />
+
 
 ## Overview
 
