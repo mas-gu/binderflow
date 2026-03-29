@@ -23,11 +23,11 @@ Given a target protein PDB and a binding site, the pipeline:
 | Tool | Type | What it generates | Reference |
 |------|------|-------------------|-----------|
 | [RFdiffusion](https://github.com/RosettaCommons/RFdiffusion) | Backbone diffusion | Backbone + LigandMPNN sequences | Watson et al., Nature 2023 |
-| [BoltzGen](https://github.com/jwohlwend/boltzgen) | Full-atom diffusion | Full-atom binder structures | Jing et al., 2024 |
+| [BoltzGen](https://github.com/HannesStark/boltzgen) | Full-atom diffusion | Full-atom binder structures | Hannes et al., 2025 |
 | [BindCraft](https://github.com/martinpacesa/BindCraft) | AF2-guided optimization | Iterative sequence design | Pacesa et al., 2024 |
-| [PXDesign](https://github.com/NVIDIA/PXDesign) | DiT diffusion + AF2-IG | Backbone + sequence + validation | NVIDIA, 2024 |
-| [Proteina](https://github.com/NVIDIA/Proteina) | Flow-based backbone | Unconditional backbones + ProteinMPNN | NVIDIA, 2024 |
-| [Proteina Complexa](https://github.com/NVIDIA/Proteina) | Flow-based full-atom | Target-conditioned binder design | NVIDIA, ICLR 2026 |
+| [PXDesign](https://github.com/bytedance/PXDesign) | DiT diffusion + AF2-IG | Backbone + sequence + validation | bytedance, 2024 |
+| [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina/) | Flow-based backbone | Unconditional backbones + ProteinMPNN | NVIDIA, 2024 |
+| [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) | Flow-based full-atom | Target-conditioned binder design | NVIDIA, ICLR 2026 |
 
 ## Quick Start
 
@@ -58,7 +58,7 @@ python generate_binders.py \
 
 - Linux (tested on Ubuntu 22.04)
 - Python >= 3.7
-- NVIDIA GPU with >= 24 GB VRAM (RTX 3090, A100, etc.)
+- NVIDIA GPU with >= 20 GB VRAM (RTX 3090, A100, etc.)
 - Conda (Miniconda or Anaconda)
 - ~200 GB disk space (conda envs + weights)
 
@@ -80,11 +80,11 @@ Each tool runs in its own isolated conda environment. Install each tool followin
 |------|---------------|---------------|
 | RFdiffusion | `rfdiffusion` | [GitHub](https://github.com/RosettaCommons/RFdiffusion) |
 | LigandMPNN | `mpnn` | [GitHub](https://github.com/dauparas/LigandMPNN) |
-| BoltzGen | `boltzgen` (prefix env) | [GitHub](https://github.com/jwohlwend/boltzgen) |
+| BoltzGen | `boltzgen` (prefix env) | [GitHub](https://github.com/HannesStark/boltzgenn) |
 | BindCraft | `BindCraft` (capital B, C) | [GitHub](https://github.com/martinpacesa/BindCraft) |
-| PXDesign | `pxdesign` | [GitHub](https://github.com/NVIDIA/PXDesign) |
-| Proteina | `proteina_env` (prefix env) | [GitHub](https://github.com/NVIDIA/Proteina) |
-| Proteina Complexa | UV venv (not conda) | [GitHub](https://github.com/NVIDIA/Proteina) |
+| PXDesign | `pxdesign` | [GitHub](https://github.com/bytedance/PXDesign) |
+| Proteina | `proteina_env` (prefix env) | [GitHub](https://github.com/NVIDIA-Digital-Bio/proteina/) |
+| Proteina Complexa | UV venv (not conda) | [GitHub](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) |
 | ESMFold | `esmfold` | [HuggingFace](https://huggingface.co/facebook/esmfold_v1) |
 
 ### 3. Optional Dependencies
@@ -385,15 +385,15 @@ Each design tool has its own license — you are responsible for complying with 
 
 | Tool | License | Notes |
 |------|---------|-------|
-| [RFdiffusion](https://github.com/RosettaCommons/RFdiffusion) | BSD 3-clause | Attribution required |
-| [LigandMPNN](https://github.com/dauparas/LigandMPNN) | MIT | Attribution required |
-| [BoltzGen](https://github.com/jwohlwend/boltzgen) | See repo | Check upstream license |
-| [BindCraft](https://github.com/martinpacesa/BindCraft) | MIT | Attribution required |
-| [PXDesign](https://github.com/bytedance/PXDesign) | Apache 2.0 | Attribution required |
-| [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina) | NVIDIA Custom | **Non-commercial / research use only** |
-| [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina) | NVIDIA Custom | **Non-commercial / research use only** |
-| [Boltz-2](https://github.com/jwohlwend/boltz) | MIT | Attribution required |
-| [ESMFold](https://github.com/facebookresearch/esm) | MIT | Attribution required |
+| [RFdiffusion]| BSD 3-clause | Attribution required |
+| [LigandMPNN] | MIT | Attribution required |
+| [BoltzGen] | See repo | Check upstream license |
+| [BindCraft] | MIT | Attribution required |
+| [PXDesign]| Apache 2.0 | Attribution required |
+| [Proteina](| NVIDIA Custom | **Non-commercial / research use only** |
+| [Proteina Complexa]| NVIDIA Custom | **Non-commercial / research use only** |
+| [Boltz-2] | MIT | Attribution required |
+| [ESMFold] | MIT | Attribution required |
 
 > **Note:** Proteina and Proteina Complexa (NVIDIA) are restricted to non-commercial and research/evaluation use. If you use these tools, ensure your use case complies with NVIDIA's license terms.
 
