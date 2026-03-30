@@ -13,9 +13,9 @@ Given a target protein PDB and a binding site, the pipeline:
 
 1. **Generates** binder candidates using up to 6 design tools in parallel
 2. **Validates** all designs with ESMFold (fast fold quality filter) and Boltz-2 (uniform cross-tool scoring with site pocket constraint)
-3. **Filters** off-site binders using geometric site contact fraction
-4. **Scores** interfaces with Rosetta and analyzes contacts with PLIP
-5. **Ranks** all designs by combined score (pLDDT + iPTM + dG)
+3. **Scores** interfaces with Rosetta
+4. **Ranks** all designs by combined score (pLDDT + iPTM + dG)
+5. **Filters** off-site binders and designs thar are predicted to poorly perform. 
 6. **Outputs** ranked structures, PyMOL scripts, dashboard plots, and PLIP reports
 
 ## Design Tools
