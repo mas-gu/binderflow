@@ -49,6 +49,13 @@ CUDA_VISIBLE_DEVICES=0 python generate_binders.py \
     --out_dir ./output/
 ```
 
+# Analysis pipeline 
+
+python -m  binders_pipeline.binder_browser
+
+<img width="657" height="409" alt="dashboard" src="https://github.com/user-attachments/assets/f75628e3-4bc1-41bf-92c4-cdffba8fc370" />
+
+
 ## Installation
 
 ### Prerequisites
