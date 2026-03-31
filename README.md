@@ -53,6 +53,10 @@ CUDA_VISIBLE_DEVICES=0 python generate_binders.py \
 
 python -m  binders_pipeline.binder_browser
 
+<img width="657" height="409" alt="rankings" src="https://github.com/user-attachments/assets/30e35c35-db1a-42ef-b759-b03b0bc14d01" />
+
+<img width="657" height="409" alt="radar" src="https://github.com/user-attachments/assets/02127c2c-f17d-47a9-9eed-5d38a3b53270" />
+
 <img width="657" height="409" alt="dashboard" src="https://github.com/user-attachments/assets/f75628e3-4bc1-41bf-92c4-cdffba8fc370" />
 
 
