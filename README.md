@@ -57,6 +57,8 @@ python -m  binders_pipeline.binder_browser
 
 <img width="657" height="409" alt="radar" src="https://github.com/user-attachments/assets/02127c2c-f17d-47a9-9eed-5d38a3b53270" />
 
+<img width="657" height="409" alt="detail" src="https://github.com/user-attachments/assets/ba327667-b0aa-4585-9340-704544d44dba" />
+
 <img width="657" height="409" alt="dashboard" src="https://github.com/user-attachments/assets/f75628e3-4bc1-41bf-92c4-cdffba8fc370" />
 
 
