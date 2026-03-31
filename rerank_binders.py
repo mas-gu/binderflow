@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Guillaume Mas
-# Author: Guillaume Mas
 # SPDX-License-Identifier: MIT
 """
 rerank_binders.py — Re-validate and re-rank existing design outputs.
@@ -101,7 +100,8 @@ from generate_binders import (
     # Metrics loaders
     _load_boltzgen_metrics, _load_bindcraft_metrics,
     # Validation + filtering
-    validate_esmfold, validate_boltz, rosetta_score_interfaces,
+    validate_esmfold, validate_boltz, rosetta_score_interfaces, compute_refolding_rmsd,
+    compute_solubility,
     geometric_site_filter, populate_binder_composition, populate_interface_composition, populate_binder_ss,
     # Ranking + output
     compute_combined_score, rank_designs,
@@ -879,8 +879,11 @@ def main():
                         help="Skip Boltz-2 validation (reuse existing results if available)")
     parser.add_argument("--skip_rosetta", action="store_true",
                         help="Skip Rosetta scoring (reuse existing results if available)")
-    parser.add_argument("--esmfold_plddt_threshold", type=float, default=70.0,
-                        help="ESMFold pre-filter threshold (default: 70)")
+    parser.add_argument("--rerun_rosetta", action="store_true",
+                        help="Force re-run Rosetta scoring on all designs (updates SAP and "
+                             "other metrics). Skips ESMFold and Boltz-2.")
+    parser.add_argument("--esmfold_plddt_threshold", type=float, default=80.0,
+                        help="ESMFold pre-filter threshold (default: 80)")
     parser.add_argument("--max_validate", type=int, default=20,
                         help="Max designs sent to Boltz validation per tool (default: 20)")
     parser.add_argument("--score_weights", default="0.4,0.5,0.1",
@@ -899,10 +902,44 @@ def main():
                              "(within --max_site_dist) for a design to pass. "
                              "0.0=only exclude designs with zero contacts (default). "
                              "0.3=require 30%% of site residues contacted.")
+    parser.add_argument("--min_site_interface_fraction", type=float, default=None,
+                        help="Minimum fraction of binder interface residues that contact "
+                             "SITE residues (vs non-site target residues). Filters designs "
+                             "that dock beside the site rather than on top. "
+                             "0.5=at least 50%% of binder interface at site. Default: disabled.")
+    parser.add_argument("--max_site_centroid_dist", type=float, default=None,
+                        help="Maximum distance (Angstrom) between binder centroid and site "
+                             "centroid. Selects binders sitting directly on top of the site. "
+                             "Typical: 10-15 Å. Default: disabled.")
+    parser.add_argument("--centroid_atoms", choices=["CA", "heavy"], default="CA",
+                        help="Which atoms to use for site centroid: 'CA' = alpha carbon "
+                             "(1 per residue, true geometric center), 'heavy' = all heavy atoms. "
+                             "Default: CA.")
+    parser.add_argument("--interface_dist", type=float, default=5.0,
+                        help="Distance cutoff (Angstrom) defining binder interface residues "
+                             "for SIF and centroid calculations. 5.0=direct contacts, "
+                             "7.0=broader footprint. Default: 5.0.")
+    parser.add_argument("--min_site_cos", type=float, default=None,
+                        help="Minimum cosine angle between outward surface normal at site "
+                             "and binder approach direction. 0.0=any direction from solvent side, "
+                             "0.5=within 60 degrees of normal. Default: disabled.")
+    parser.add_argument("--max_refolding_rmsd", type=float, default=None,
+                        help="Maximum refolding RMSD (Angstrom) between ESMFold binder-alone "
+                             "and Boltz-2 binder-in-complex. Filters target-dependent binders. "
+                             "Typical: 3.0-4.0 Å.")
     parser.add_argument("--max_interface_ke", type=float, default=None,
                         help="Maximum K+E fraction at the binder-target interface (0-1). "
                              "Designs with interface_KE_fraction above this are excluded. "
                              "None=disable filter (default). Typical: 0.25")
+    parser.add_argument("--no_cys", action="store_true",
+                        help="Exclude designs containing cysteine (unpaired Cys cause "
+                             "aggregation in E.coli expression).")
+    parser.add_argument("--max_aa_fraction", type=float, default=None,
+                        help="Maximum fraction of any single amino acid in the binder sequence. "
+                             "Catches poly-Ala/poly-Glu hallucinations. Typical: 0.3.")
+    parser.add_argument("--min_sc", type=float, default=None,
+                        help="Minimum Rosetta shape complementarity (0-1). "
+                             "Natural interfaces ~0.65, designed aim >0.60. Default: disabled.")
     parser.add_argument("--reprediction", action="store_true",
                         help="Use Boltz-2 re-prediction scoring for all tools "
                              "(default: use native tool scores for BindCraft/BoltzGen/PXDesign)")
@@ -967,6 +1004,11 @@ def main():
         args.skip_esmfold = True
         args.skip_boltz = True
         args.skip_rosetta = True
+
+    if args.rerun_rosetta:
+        args.skip_esmfold = True
+        args.skip_boltz = True
+        args.skip_rosetta = False  # force Rosetta to run
 
     # ── Header ─────────────────────────────────────────────────────────────
     log("=" * 62)
@@ -1172,23 +1214,43 @@ def main():
             log(f"\nBoltz-2: all applicable designs already validated")
 
     # Geometric site proximity filter (between Boltz and Rosetta)
-    if args.max_site_dist > 0:
+    # Always run if any geometric filter is requested (SIF, centroid, cos) — computes all metrics
+    need_geometric = (args.max_site_dist > 0 or
+                      args.min_site_interface_fraction is not None or
+                      args.max_site_centroid_dist is not None or
+                      args.min_site_cos is not None)
+    if need_geometric:
+        max_dist = args.max_site_dist if args.max_site_dist > 0 else 999.0
         log(f"\n{'─' * 50}")
         log("STEP: Geometric site proximity filter")
         log(f"{'─' * 50}")
         geometric_site_filter(all_designs, site_resnums=site_resnums,
                               target_residues=tchain.get("residues"),
-                              max_dist=args.max_site_dist,
+                              max_dist=max_dist,
                               min_site_fraction=args.min_site_fraction,
+                              interface_dist=args.interface_dist,
                               dry_run=args.dry_run)
 
     # Stage 3: Rosetta
     if not args.skip_rosetta:
+        if args.rerun_rosetta:
+            # Clear existing Rosetta scores to force re-computation (e.g., to add SAP)
+            rosetta_keys = ["rosetta_dG", "rosetta_sc", "rosetta_hbonds", "rosetta_bunsats",
+                            "rosetta_dsasa", "rosetta_dg_dsasa", "rosetta_packstat", "rosetta_sap"]
+            for d in all_designs:
+                for k in rosetta_keys:
+                    d.pop(k, None)
+            # Also delete cached scores.json so Rosetta re-runs from scratch
+            scores_json = val_dir / "rosetta" / "scores.json"
+            if scores_json.exists():
+                scores_json.unlink()
+                log(f"  Cleared cached Rosetta scores for re-computation")
+
         need_rosetta = [d for d in all_designs
                         if (d.get("complex_cif") or d.get("binder_pdb")) and "rosetta_dG" not in d]
         if need_rosetta:
             log(f"\n{'─' * 50}")
-            log(f"STEP: Rosetta scoring ({len(need_rosetta)} new designs)")
+            log(f"STEP: Rosetta scoring ({len(need_rosetta)} {'re-scored' if args.rerun_rosetta else 'new'} designs)")
             log(f"{'─' * 50}")
             rosetta_score_interfaces(need_rosetta, val_dir, dry_run=args.dry_run)
         else:
@@ -1222,6 +1284,18 @@ def main():
     else:
         log("  (SS skipped in dry-run mode)")
 
+    # Refolding RMSD (ESMFold alone vs Boltz-2 complex)
+    log(f"\n{'─' * 50}")
+    log("STEP: Refolding RMSD")
+    log(f"{'─' * 50}")
+    compute_refolding_rmsd(all_designs, dry_run=args.dry_run)
+
+    # Solubility prediction (NetSolP)
+    log(f"\n{'─' * 50}")
+    log("STEP: Solubility prediction (NetSolP)")
+    log(f"{'─' * 50}")
+    compute_solubility(all_designs, dry_run=args.dry_run)
+
     # ── Rank & output ──────────────────────────────────────────────────────
     log(f"\n{'─' * 50}")
     log("STEP: Ranking and output")
@@ -1236,7 +1310,90 @@ def main():
         ss_bias=args.ss_bias,
     )
 
-    # Interface K+E filter — exclude designs with too many charged residues at interface
+    # ── Quality filters (applied first) ──────────────────────────────────
+
+    # Refolding RMSD filter — exclude target-dependent binders
+    if args.max_refolding_rmsd is not None:
+        before = sum(1 for d in all_ranked if d.get("rank") is not None)
+        for d in all_ranked:
+            if d.get("rank") is None:
+                continue
+            rmsd = d.get("refolding_rmsd", float("nan"))
+            if rmsd == rmsd and rmsd > args.max_refolding_rmsd:
+                d["combined_score"] = float("nan")
+                d["rank"] = None
+        ranked = [d for d in all_ranked if d.get("rank") is not None]
+        ranked.sort(key=lambda x: x["combined_score"], reverse=True)
+        for i, d in enumerate(ranked):
+            d["rank"] = i + 1
+        after = len(ranked)
+        if before - after > 0:
+            log(f"  Refolding RMSD filter: removed {before - after} designs "
+                f"with refolding_rmsd > {args.max_refolding_rmsd:.1f} Å")
+
+    # Cysteine filter
+    if args.no_cys:
+        before = sum(1 for d in all_ranked if d.get("rank") is not None)
+        for d in all_ranked:
+            if d.get("rank") is None:
+                continue
+            seq = d.get("binder_sequence", "")
+            if "C" in seq:
+                d["combined_score"] = float("nan")
+                d["rank"] = None
+        ranked = [d for d in all_ranked if d.get("rank") is not None]
+        ranked.sort(key=lambda x: x["combined_score"], reverse=True)
+        for i, d in enumerate(ranked):
+            d["rank"] = i + 1
+        after = len(ranked)
+        if before - after > 0:
+            log(f"  Cys filter: removed {before - after} designs containing cysteine")
+
+    # AA composition filter
+    if args.max_aa_fraction is not None:
+        before = sum(1 for d in all_ranked if d.get("rank") is not None)
+        for d in all_ranked:
+            if d.get("rank") is None:
+                continue
+            seq = d.get("binder_sequence", "")
+            if seq:
+                max_frac = max(seq.count(aa) / len(seq) for aa in set(seq))
+                if max_frac > args.max_aa_fraction:
+                    d["combined_score"] = float("nan")
+                    d["rank"] = None
+        ranked = [d for d in all_ranked if d.get("rank") is not None]
+        ranked.sort(key=lambda x: x["combined_score"], reverse=True)
+        for i, d in enumerate(ranked):
+            d["rank"] = i + 1
+        after = len(ranked)
+        if before - after > 0:
+            log(f"  AA composition filter: removed {before - after} designs "
+                f"with single AA > {args.max_aa_fraction:.0%}")
+
+    # Shape complementarity filter
+    if args.min_sc is not None:
+        before = sum(1 for d in all_ranked if d.get("rank") is not None)
+        for d in all_ranked:
+            if d.get("rank") is None:
+                continue
+            sc = d.get("rosetta_sc", float("nan"))
+            try:
+                sc = float(sc)
+            except (ValueError, TypeError):
+                sc = float("nan")
+            if sc == sc and sc < args.min_sc:
+                d["combined_score"] = float("nan")
+                d["rank"] = None
+        ranked = [d for d in all_ranked if d.get("rank") is not None]
+        ranked.sort(key=lambda x: x["combined_score"], reverse=True)
+        for i, d in enumerate(ranked):
+            d["rank"] = i + 1
+        after = len(ranked)
+        if before - after > 0:
+            log(f"  Shape complementarity filter: removed {before - after} designs "
+                f"with Sc < {args.min_sc:.2f}")
+
+    # Interface K+E filter
     if args.max_interface_ke is not None:
         before = sum(1 for d in all_ranked if d.get("rank") is not None)
         for d in all_ranked:
@@ -1246,7 +1403,6 @@ def main():
             if ike == ike and ike > args.max_interface_ke:
                 d["combined_score"] = float("nan")
                 d["rank"] = None
-        # Re-rank remaining
         ranked = [d for d in all_ranked if d.get("rank") is not None]
         ranked.sort(key=lambda x: x["combined_score"], reverse=True)
         for i, d in enumerate(ranked):
@@ -1255,6 +1411,66 @@ def main():
         if before - after > 0:
             log(f"  Interface KE filter: removed {before - after} designs "
                 f"with interface K+E > {args.max_interface_ke:.0%}")
+
+    # ── Geometric site filters (applied last) ─────────────────────────────
+
+    # Site interface fraction filter (SIF)
+    if args.min_site_interface_fraction is not None:
+        before = sum(1 for d in all_ranked if d.get("rank") is not None)
+        for d in all_ranked:
+            if d.get("rank") is None:
+                continue
+            sif = d.get("site_interface_fraction", float("nan"))
+            if sif == sif and sif < args.min_site_interface_fraction:
+                d["combined_score"] = float("nan")
+                d["rank"] = None
+        ranked = [d for d in all_ranked if d.get("rank") is not None]
+        ranked.sort(key=lambda x: x["combined_score"], reverse=True)
+        for i, d in enumerate(ranked):
+            d["rank"] = i + 1
+        after = len(ranked)
+        if before - after > 0:
+            log(f"  Site interface filter: removed {before - after} designs "
+                f"with site_interface_fraction < {args.min_site_interface_fraction:.0%}")
+
+    # Site centroid distance filter
+    if args.max_site_centroid_dist is not None:
+        centroid_key = f"site_centroid_dist_{args.centroid_atoms}"
+        before = sum(1 for d in all_ranked if d.get("rank") is not None)
+        for d in all_ranked:
+            if d.get("rank") is None:
+                continue
+            cd = d.get(centroid_key, float("nan"))
+            if cd == cd and cd > args.max_site_centroid_dist:
+                d["combined_score"] = float("nan")
+                d["rank"] = None
+        ranked = [d for d in all_ranked if d.get("rank") is not None]
+        ranked.sort(key=lambda x: x["combined_score"], reverse=True)
+        for i, d in enumerate(ranked):
+            d["rank"] = i + 1
+        after = len(ranked)
+        if before - after > 0:
+            log(f"  Centroid distance filter ({args.centroid_atoms}): removed {before - after} designs "
+                f"with {centroid_key} > {args.max_site_centroid_dist:.1f} Å")
+
+    # Surface normal filter (cos angle)
+    if args.min_site_cos is not None:
+        before = sum(1 for d in all_ranked if d.get("rank") is not None)
+        for d in all_ranked:
+            if d.get("rank") is None:
+                continue
+            cos = d.get("site_cos_angle", float("nan"))
+            if cos == cos and cos < args.min_site_cos:
+                d["combined_score"] = float("nan")
+                d["rank"] = None
+        ranked = [d for d in all_ranked if d.get("rank") is not None]
+        ranked.sort(key=lambda x: x["combined_score"], reverse=True)
+        for i, d in enumerate(ranked):
+            d["rank"] = i + 1
+        after = len(ranked)
+        if before - after > 0:
+            log(f"  Surface normal filter: removed {before - after} designs "
+                f"with site_cos_angle < {args.min_site_cos:.2f}")
 
     write_rankings_csv(all_ranked, out_dir / "rankings.csv")
 
@@ -1268,7 +1484,8 @@ def main():
     copy_top_designs(all_ranked, out_dir / "top_designs",
                      target_pdb=target_path, n=args.top_n,
                      site_resnums=site_resnums,
-                     target_residues=tchain.get("residues"))
+                     target_residues=tchain.get("residues"),
+                     cos_angle=args.min_site_cos)
     plot_dashboard(
         all_ranked, out_dir / "dashboard.png",
         title=f"Binder Re-rank: {target_path.stem}  site={args.site}")

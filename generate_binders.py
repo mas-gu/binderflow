@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Guillaume Mas
-# Author: Guillaume Mas
 # SPDX-License-Identifier: MIT
 """
 generate_binders.py — Multi-tool binder design pipeline.
 
-Given a target protein and a binding site, runs up to five complementary design
+Given a target protein and a binding site, runs up to six complementary design
 tools, validates all outputs with ESMFold (fast pre-filter) and Boltz-2 (uniform
 cross-tool scoring with site pocket constraint), then ranks and outputs the best
 binder candidates.
@@ -298,6 +297,48 @@ def run_cmd(cmd, timeout=86400, extra_env=None, cwd=None, dry_run=False):
     if r.returncode != 0:
         raise RuntimeError(r.stderr[-3000:] or r.stdout[-3000:])
     return r.stdout, r.stderr
+
+
+def _cleanup_gpu(gpu_id=None):
+    """Kill orphaned GPU processes on the target GPU after a tool finishes.
+
+    When a tool subprocess crashes, child processes may survive and hold GPU
+    memory (zombie CUDA contexts). This function finds and kills any python
+    processes on our GPU that are NOT the main pipeline process.
+    """
+    if gpu_id is None:
+        gpu_id = GPU_ENV.get("CUDA_VISIBLE_DEVICES", os.environ.get("CUDA_VISIBLE_DEVICES"))
+    if gpu_id is None:
+        return
+    my_pid = os.getpid()
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory",
+             "--format=csv,noheader,nounits", f"--id={gpu_id}"],
+            capture_output=True, text=True, timeout=10)
+        for line in r.stdout.strip().splitlines():
+            parts = line.split(",")
+            if len(parts) < 2:
+                continue
+            pid = int(parts[0].strip())
+            if pid == my_pid:
+                continue
+            # Check if this process is a child of our pipeline — don't kill unrelated work
+            try:
+                pr = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                                    capture_output=True, text=True, timeout=5)
+                ppid = int(pr.stdout.strip())
+            except Exception:
+                continue
+            # Kill orphans whose parent is init (1) or our own PID
+            # (our subprocesses should have exited; lingering ones are zombies)
+            if ppid == my_pid:
+                mem_mb = int(parts[1].strip())
+                log(f"  GPU cleanup: killing orphan PID {pid} ({mem_mb} MiB on GPU {gpu_id})")
+                os.kill(pid, 9)
+                import time; time.sleep(2)
+    except Exception:
+        pass  # non-critical — best effort cleanup
 
 
 def _safe_float(val, default=float("nan")):
@@ -1170,7 +1211,6 @@ def _fix_cif_entity_ids(cif_path):
     # Build chain→numeric mapping from _entity.id rows
     chain_to_num = {}
     next_id = 1
-    in_atom_site = False
     new_lines = []
     for line in lines:
         # Fix _entity.id <chain> → _entity.id <num>
@@ -1534,7 +1574,7 @@ def run_proteina(target_path, chain_id, site_resnums, length_min, length_max,
     # When --device is set, CUDA_VISIBLE_DEVICES restricts to one GPU.
     # Inside the process that GPU always appears as cuda:0.
     # Only auto-detect when no --device flag was given.
-    if GPU_ENV.get("CUDA_VISIBLE_DEVICES"):
+    if GPU_ENV.get("CUDA_VISIBLE_DEVICES") or os.environ.get("CUDA_VISIBLE_DEVICES"):
         gpu_device = "cuda:0"
     else:
         gpu_device = "cuda:0"
@@ -2960,8 +3000,211 @@ def validate_boltz(designs, target_chain_seq, val_dir,
 
 # ── Geometric site proximity filter ───────────────────────────────────────────
 
+def _parse_heavy_atoms(filepath):
+    """Parse all heavy atom coordinates by chain from PDB or CIF file.
+
+    Returns (chains, chain_res_counts) where:
+      chains: chain_id → [(resnum, x, y, z), ...] (one entry per heavy atom)
+      chain_res_counts: chain_id → number of unique residues
+    Returns (None, None) on failure.
+    """
+    chains = {}
+    chain_res = {}
+    path_str = str(filepath)
+    is_cif = path_str.endswith(".cif")
+    try:
+        with open(filepath) as fh:
+            for line in fh:
+                if is_cif:
+                    if not line.startswith("ATOM"):
+                        continue
+                    parts = line.split()
+                    if len(parts) < 13:
+                        continue
+                    element = parts[2] if len(parts) > 2 else ""
+                    if element == "H":
+                        continue
+                    chain = parts[9] if len(parts) > 9 else parts[6]
+                    try:
+                        resnum = int(parts[7] if len(parts) > 9 else parts[8])
+                        x, y, z = float(parts[10]), float(parts[11]), float(parts[12])
+                    except (ValueError, IndexError):
+                        continue
+                else:
+                    if not line.startswith("ATOM"):
+                        continue
+                    element = line[76:78].strip() if len(line) >= 78 else line[12:16].strip()[0]
+                    if element == "H":
+                        continue
+                    chain = line[21]
+                    try:
+                        resnum = int(line[22:26].strip())
+                        x = float(line[30:38])
+                        y = float(line[38:46])
+                        z = float(line[46:54])
+                    except ValueError:
+                        continue
+                chains.setdefault(chain, []).append((resnum, x, y, z))
+                chain_res.setdefault(chain, set()).add(resnum)
+    except (OSError, IOError):
+        return None, None
+    return chains, {c: len(r) for c, r in chain_res.items()}
+
+
+def _compute_site_metrics(args):
+    """Worker function for parallel site metric computation.
+
+    Returns dict with site metrics, or None to skip.
+    """
+    import numpy as np
+    struct_file, site_set, n_site_residues, max_dist, interface_dist = args
+
+    chains, chain_res_counts = _parse_heavy_atoms(struct_file)
+    if not chains or not chain_res_counts or len(chain_res_counts) < 2:
+        return None
+
+    sorted_chains = sorted(chain_res_counts.items(), key=lambda x: x[1])
+    binder_chain_id = sorted_chains[0][0]
+    target_chain_id = sorted_chains[-1][0]
+
+    binder_atoms = chains[binder_chain_id]
+    target_atoms = chains[target_chain_id]
+
+    binder_coords = np.array([[a[1], a[2], a[3]] for a in binder_atoms])
+
+    # Site contact fraction
+    site_res_atoms = {}
+    for resnum, x, y, z in target_atoms:
+        if resnum in site_set:
+            site_res_atoms.setdefault(resnum, []).append([x, y, z])
+
+    n_contacted = 0
+    for resnum, coords_list in site_res_atoms.items():
+        res_coords = np.array(coords_list)
+        diffs = binder_coords[:, None, :] - res_coords[None, :, :]
+        dists = np.sqrt((diffs ** 2).sum(axis=2))
+        if float(dists.min()) <= max_dist:
+            n_contacted += 1
+
+    contact_frac = n_contacted / n_site_residues if n_site_residues > 0 else 0.0
+
+    # Site interface fraction
+    # interface_dist passed via args
+    target_all_atoms = {}
+    for resnum, x, y, z in target_atoms:
+        target_all_atoms.setdefault(resnum, []).append([x, y, z])
+
+    binder_res_atoms = {}
+    for resnum, x, y, z in binder_atoms:
+        binder_res_atoms.setdefault(resnum, []).append([x, y, z])
+
+    binder_at_site = 0
+    binder_at_target = 0
+    for b_resnum, b_coords_list in binder_res_atoms.items():
+        b_arr = np.array(b_coords_list)
+        contacts_any_target = False
+        contacts_site = False
+        for t_resnum, t_coords_list in target_all_atoms.items():
+            t_arr = np.array(t_coords_list)
+            diffs = b_arr[:, None, :] - t_arr[None, :, :]
+            min_d = float(np.sqrt((diffs ** 2).sum(axis=2)).min())
+            if min_d <= interface_dist:
+                contacts_any_target = True
+                if t_resnum in site_set:
+                    contacts_site = True
+        if contacts_any_target:
+            binder_at_target += 1
+        if contacts_site:
+            binder_at_site += 1
+
+    site_iface_frac = binder_at_site / binder_at_target if binder_at_target > 0 else 0.0
+
+    # Centroid distance: center of binder INTERFACE residues vs center of site
+    # Using only interface residues avoids bias from binder core atoms pulling centroid away
+    iface_binder_coords = []
+    for b_resnum, b_coords_list in binder_res_atoms.items():
+        b_arr = np.array(b_coords_list)
+        for t_resnum, t_coords_list in target_all_atoms.items():
+            t_arr = np.array(t_coords_list)
+            diffs = b_arr[:, None, :] - t_arr[None, :, :]
+            if float(np.sqrt((diffs ** 2).sum(axis=2)).min()) <= interface_dist:
+                iface_binder_coords.extend(b_coords_list)
+                break
+    # Compute both centroid variants:
+    # 1) Heavy-atom centroid: all heavy atoms of site residues (already collected)
+    site_heavy_coords = []
+    for resnum, x, y, z in target_atoms:
+        if resnum in site_set:
+            site_heavy_coords.append([x, y, z])
+
+    # 2) CA centroid: one CA per residue, equal weight — true geometric center
+    site_ca_coords = []
+    is_cif = str(struct_file).endswith(".cif")
+    try:
+        with open(struct_file) as fh:
+            for line in fh:
+                if not line.startswith("ATOM"):
+                    continue
+                if is_cif:
+                    parts = line.split()
+                    if len(parts) < 13:
+                        continue
+                    atom_name = parts[3]
+                    chain = parts[9] if len(parts) > 9 else parts[6]
+                    resnum_val = int(parts[7] if len(parts) > 9 else parts[8])
+                    x_val, y_val, z_val = float(parts[10]), float(parts[11]), float(parts[12])
+                else:
+                    atom_name = line[12:16].strip()
+                    chain = line[21]
+                    resnum_val = int(line[22:26].strip())
+                    x_val, y_val, z_val = float(line[30:38]), float(line[38:46]), float(line[46:54])
+                if chain == target_chain_id and resnum_val in site_set and atom_name == "CA":
+                    site_ca_coords.append([x_val, y_val, z_val])
+    except Exception:
+        pass
+
+    binder_iface_center = np.mean(iface_binder_coords, axis=0) if iface_binder_coords else None
+    centroid_dist_heavy = float("nan")
+    centroid_dist_CA = float("nan")
+    site_cos_angle = float("nan")
+    if binder_iface_center is not None:
+        if site_heavy_coords:
+            centroid_dist_heavy = float(np.linalg.norm(
+                binder_iface_center - np.mean(site_heavy_coords, axis=0)))
+        if site_ca_coords:
+            site_center = np.mean(site_ca_coords, axis=0)
+            centroid_dist_CA = float(np.linalg.norm(
+                binder_iface_center - site_center))
+            # Surface normal check: is the binder on the outward-facing side?
+            # Outward normal = target_center → site_center (points away from protein core)
+            # Binder vector = site_center → binder_interface_center
+            # cos(angle) > 0 means binder approaches from solvent side
+            target_center = np.mean([[x, y, z] for resnum, x, y, z in target_atoms], axis=0)
+            outward = site_center - target_center
+            outward_norm = np.linalg.norm(outward)
+            if outward_norm > 0.1:
+                outward = outward / outward_norm
+                binder_vec = binder_iface_center - site_center
+                binder_vec_norm = np.linalg.norm(binder_vec)
+                if binder_vec_norm > 0.1:
+                    site_cos_angle = float(np.dot(outward, binder_vec / binder_vec_norm))
+
+    return {
+        "site_contact_fraction": round(contact_frac, 3),
+        "site_n_contacted": n_contacted,
+        "site_n_total": n_site_residues,
+        "site_interface_fraction": round(site_iface_frac, 3),
+        "site_interface_binder_res": binder_at_site,
+        "site_interface_total_res": binder_at_target,
+        "site_centroid_dist_heavy": round(centroid_dist_heavy, 1),
+        "site_centroid_dist_CA": round(centroid_dist_CA, 1),
+        "site_cos_angle": round(site_cos_angle, 3),
+    }
+
+
 def geometric_site_filter(designs, site_resnums, target_residues,
-                          max_dist=15.0, min_site_fraction=0.0, dry_run=False):
+                          max_dist=15.0, min_site_fraction=0.0, interface_dist=5.0,
+                          dry_run=False):
     """
     Site contact filter: for each design, count how many site residues have
     at least one binder heavy atom within max_dist Å.
@@ -2971,18 +3214,12 @@ def geometric_site_filter(designs, site_resnums, target_residues,
       site_n_contacted      — number of site residues contacted
       site_n_total          — total number of site residues
       site_geometric_pass   — True if fraction >= min_site_fraction and > 0
+      site_interface_fraction — fraction of binder interface at site (0-1)
 
-    Pass/fail logic:
-      - n_contacted == 0 → always fail (completely off-site)
-      - n_contacted/n_total < min_site_fraction → fail (insufficient coverage)
-      - Otherwise → pass
-
-    Numbering rules:
-      - complex_cif (Boltz-2 / BoltzGen) → renumbered 1-based indices
-      - binder_pdb (BindCraft, Proteina Complexa) → original PDB numbering
-      - PXDesign binder_pdb → cropped target, skip (unreliable mapping)
+    Uses multiprocessing for the expensive per-design distance computation.
     """
     import numpy as np
+    from multiprocessing import Pool, cpu_count
 
     if not site_resnums or max_dist <= 0:
         return designs
@@ -2998,11 +3235,9 @@ def geometric_site_filter(designs, site_resnums, target_residues,
     sorted_site = sorted(site_resnums)
     if len(sorted_site) < 2:
         return designs
-    # Find largest gap to split into two patches
     gaps = [(sorted_site[i+1] - sorted_site[i], i) for i in range(len(sorted_site) - 1)]
     max_gap_val, max_gap_idx = max(gaps)
     if max_gap_val <= 5:
-        # Single contiguous patch — just check overall proximity
         patches_orig = [original_site]
         patches_renum = [renumbered_site]
     else:
@@ -3016,69 +3251,20 @@ def geometric_site_filter(designs, site_resnums, target_residues,
         else:
             patches_renum = patches_orig
 
-    def _parse_heavy_atoms(filepath):
-        """Parse all heavy atom coordinates by chain from PDB or CIF file.
-
-        Returns (chains, chain_res_counts) where:
-          chains: chain_id → [(resnum, x, y, z), ...] (one entry per heavy atom)
-          chain_res_counts: chain_id → number of unique residues
-        Returns (None, None) on failure.
-        """
-        chains = {}
-        chain_res = {}
-        path_str = str(filepath)
-        is_cif = path_str.endswith(".cif")
-        try:
-            with open(filepath) as fh:
-                for line in fh:
-                    if is_cif:
-                        if not line.startswith("ATOM"):
-                            continue
-                        parts = line.split()
-                        if len(parts) < 13:
-                            continue
-                        element = parts[2] if len(parts) > 2 else ""
-                        if element == "H":
-                            continue
-                        chain = parts[9] if len(parts) > 9 else parts[6]
-                        try:
-                            resnum = int(parts[7] if len(parts) > 9 else parts[8])
-                            x, y, z = float(parts[10]), float(parts[11]), float(parts[12])
-                        except (ValueError, IndexError):
-                            continue
-                    else:
-                        if not line.startswith("ATOM"):
-                            continue
-                        element = line[76:78].strip() if len(line) >= 78 else line[12:16].strip()[0]
-                        if element == "H":
-                            continue
-                        chain = line[21]
-                        try:
-                            resnum = int(line[22:26].strip())
-                            x = float(line[30:38])
-                            y = float(line[38:46])
-                            z = float(line[46:54])
-                        except ValueError:
-                            continue
-                    chains.setdefault(chain, []).append((resnum, x, y, z))
-                    chain_res.setdefault(chain, set()).add(resnum)
-        except (OSError, IOError):
-            return None, None
-        return chains, {c: len(r) for c, r in chain_res.items()}
-
     pass_counts = {}
     fail_counts = {}
     skip_counts = {}
 
-    # Flatten all site residues for contact fraction
     all_site_renum = renumbered_site
     all_site_orig = original_site
     n_site_residues = len(site_resnums)
 
-    for d in designs:
+    # Prepare worker args for parallelizable designs
+    worker_indices = []
+    worker_args = []
+    for i, d in enumerate(designs):
         tool = d.get("tool") or _get_tool_from_design_id(d.get("design_id", "")) or "unknown"
 
-        # Find structure file
         struct_file = None
         use_renumbered = True
         if d.get("complex_cif") and Path(d["complex_cif"]).exists():
@@ -3092,63 +3278,40 @@ def geometric_site_filter(designs, site_resnums, target_residues,
             struct_file = d["binder_pdb"]
             use_renumbered = False
 
-        if not struct_file:
+        if not struct_file or dry_run:
             skip_counts[tool] = skip_counts.get(tool, 0) + 1
             d["site_geometric_pass"] = True
             continue
 
-        if dry_run:
-            d["site_geometric_pass"] = True
-            skip_counts[tool] = skip_counts.get(tool, 0) + 1
-            continue
-
-        chains, chain_res_counts = _parse_heavy_atoms(struct_file)
-        if not chains or not chain_res_counts or len(chain_res_counts) < 2:
-            skip_counts[tool] = skip_counts.get(tool, 0) + 1
-            d["site_geometric_pass"] = True
-            continue
-
-        # Identify binder (fewer unique residues) and target (more)
-        sorted_chains = sorted(chain_res_counts.items(), key=lambda x: x[1])
-        binder_chain_id = sorted_chains[0][0]
-        target_chain_id = sorted_chains[-1][0]
-
-        binder_atoms = chains[binder_chain_id]
-        target_atoms = chains[target_chain_id]
         site_set = all_site_renum if use_renumbered else all_site_orig
+        worker_indices.append(i)
+        worker_args.append((struct_file, site_set, n_site_residues, max_dist, interface_dist))
 
-        # Build binder heavy atom coordinate array
-        binder_coords = np.array([[a[1], a[2], a[3]] for a in binder_atoms])
+    # Run in parallel
+    n_workers = min(max(1, cpu_count() - 2), 12, len(worker_args) or 1)
+    if worker_args:
+        log(f"  Geometric filter: processing {len(worker_args)} designs on {n_workers} CPUs...")
+        with Pool(n_workers) as pool:
+            results = pool.map(_compute_site_metrics, worker_args)
+    else:
+        results = []
 
-        # Group target heavy atoms by residue for site residues only
-        site_res_atoms = {}
-        for resnum, x, y, z in target_atoms:
-            if resnum in site_set:
-                site_res_atoms.setdefault(resnum, []).append([x, y, z])
+    # Apply results back to designs
+    for idx, result in zip(worker_indices, results):
+        d = designs[idx]
+        tool = d.get("tool") or _get_tool_from_design_id(d.get("design_id", "")) or "unknown"
 
-        # Count site residues with at least one heavy atom within max_dist of binder
-        n_contacted = 0
-        for resnum, coords_list in site_res_atoms.items():
-            res_coords = np.array(coords_list)
-            diffs = binder_coords[:, None, :] - res_coords[None, :, :]
-            dists = np.sqrt((diffs ** 2).sum(axis=2))
-            if float(dists.min()) <= max_dist:
-                n_contacted += 1
+        if result is None:
+            skip_counts[tool] = skip_counts.get(tool, 0) + 1
+            d["site_geometric_pass"] = True
+            continue
 
-        contact_frac = n_contacted / n_site_residues if n_site_residues > 0 else 0.0
-
-        d["site_contact_fraction"] = round(contact_frac, 3)
-        d["site_n_contacted"] = n_contacted
-        d["site_n_total"] = n_site_residues
+        d.update(result)
+        contact_frac = result["site_contact_fraction"]
+        n_contacted = result["site_n_contacted"]
 
         if n_contacted == 0 or contact_frac < min_site_fraction:
             d["site_geometric_pass"] = False
-            if d.get("complex_cif"):
-                d["_orig_complex_cif"] = d["complex_cif"]
-                d["complex_cif"] = None
-            if d.get("binder_pdb"):
-                d["_orig_binder_pdb"] = d["binder_pdb"]
-                d["binder_pdb"] = None
             fail_counts[tool] = fail_counts.get(tool, 0) + 1
         else:
             d["site_geometric_pass"] = True
@@ -3175,6 +3338,223 @@ def geometric_site_filter(designs, site_resnums, target_residues,
     return designs
 
 
+# ── Refolding RMSD ────────────────────────────────────────────────────────────
+
+def compute_refolding_rmsd(designs, dry_run=False):
+    """Compute CA RMSD between ESMFold (binder alone) and Boltz-2 (binder in complex).
+
+    High RMSD (>3-4 Å) indicates the binder only folds correctly when bound
+    to the target — likely disordered on its own.
+
+    Adds to each design dict:
+        refolding_rmsd — CA RMSD in Angstrom (nan if structures unavailable)
+    """
+    import numpy as np
+
+    def _parse_ca_coords_pdb(path):
+        """Extract CA coords from PDB, return dict chain -> [(resnum, x, y, z)]."""
+        chains = {}
+        with open(path) as f:
+            for line in f:
+                if line.startswith("ATOM") and line[12:16].strip() == "CA":
+                    ch = line[21]
+                    rn = int(line[22:26].strip())
+                    x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
+                    chains.setdefault(ch, []).append((rn, x, y, z))
+        return chains
+
+    def _parse_ca_coords_cif(path):
+        """Extract CA coords from CIF, return dict chain -> [(resnum, x, y, z)]."""
+        chains = {}
+        with open(path) as f:
+            for line in f:
+                if not line.startswith("ATOM"):
+                    continue
+                parts = line.split()
+                if len(parts) < 13 or parts[3] != "CA":
+                    continue
+                ch = parts[9] if len(parts) > 9 else parts[6]
+                rn = int(parts[7] if len(parts) > 9 else parts[8])
+                x, y, z = float(parts[10]), float(parts[11]), float(parts[12])
+                chains.setdefault(ch, []).append((rn, x, y, z))
+        return chains
+
+    def _kabsch_rmsd(coords1, coords2):
+        """Compute RMSD after optimal superposition (Kabsch algorithm)."""
+        c1 = np.array(coords1)
+        c2 = np.array(coords2)
+        c1 -= c1.mean(axis=0)
+        c2 -= c2.mean(axis=0)
+        H = c1.T @ c2
+        U, S, Vt = np.linalg.svd(H)
+        d = np.linalg.det(Vt.T @ U.T)
+        sign_matrix = np.diag([1, 1, d])
+        R = Vt.T @ sign_matrix @ U.T
+        c1_rot = c1 @ R.T
+        return float(np.sqrt(np.mean(np.sum((c1_rot - c2) ** 2, axis=1))))
+
+    n_computed = 0
+    n_skipped = 0
+    for d in designs:
+        if dry_run:
+            continue
+        esm_pdb = d.get("esmfold_pdb")
+        boltz_cif = d.get("complex_cif") or d.get("_orig_complex_cif")
+
+        if not esm_pdb or not boltz_cif:
+            n_skipped += 1
+            continue
+        if not Path(esm_pdb).exists() or not Path(boltz_cif).exists():
+            n_skipped += 1
+            continue
+
+        try:
+            # ESMFold PDB: single chain, binder only
+            esm_chains = _parse_ca_coords_pdb(esm_pdb)
+            esm_cas = list(esm_chains.values())[0] if esm_chains else []
+
+            # Boltz CIF: multi-chain complex, binder is the shorter chain
+            cif_chains = _parse_ca_coords_cif(boltz_cif)
+            if len(cif_chains) < 2:
+                n_skipped += 1
+                continue
+            binder_chain = min(cif_chains, key=lambda c: len(cif_chains[c]))
+            boltz_cas = cif_chains[binder_chain]
+
+            # Match by residue count (both should be 1-based sequential)
+            n = min(len(esm_cas), len(boltz_cas))
+            if n < 10:
+                n_skipped += 1
+                continue
+
+            esm_xyz = [[x, y, z] for _, x, y, z in esm_cas[:n]]
+            boltz_xyz = [[x, y, z] for _, x, y, z in boltz_cas[:n]]
+
+            d["refolding_rmsd"] = round(_kabsch_rmsd(esm_xyz, boltz_xyz), 2)
+            n_computed += 1
+        except Exception:
+            n_skipped += 1
+
+    if n_computed or n_skipped:
+        rmsds = [d["refolding_rmsd"] for d in designs
+                 if "refolding_rmsd" in d and d["refolding_rmsd"] == d["refolding_rmsd"]]
+        if rmsds:
+            log(f"  Refolding RMSD: computed {n_computed}, skipped {n_skipped}")
+            log(f"  RMSD stats: min={min(rmsds):.1f}, median={sorted(rmsds)[len(rmsds)//2]:.1f}, "
+                f"max={max(rmsds):.1f} Å (n={len(rmsds)})")
+            n_good = sum(1 for r in rmsds if r <= 3.0)
+            log(f"  {n_good}/{len(rmsds)} designs with refolding RMSD ≤ 3.0 Å")
+
+    return designs
+
+
+# ── Solubility prediction (NetSolP) ──────────────────────────────────────────
+
+_NETSOLP_DIR = os.environ.get("NETSOLP_DIR",
+    os.path.join(os.environ.get("BINDER_SOFTWARE_DIR", os.path.expanduser("~/data/software")),
+                 "NetSolP-1.0", "PredictionServer"))
+
+
+def compute_solubility(designs, dry_run=False):
+    """Predict E.coli solubility using NetSolP (Distilled model).
+
+    Runs NetSolP via subprocess in the esmfold conda env.
+    Adds to each design dict:
+        netsolp_solubility — predicted solubility probability (0-1, higher = more soluble)
+    """
+    if dry_run:
+        return designs
+
+    predict_script = os.path.join(_NETSOLP_DIR, "predict.py")
+    if not os.path.exists(predict_script):
+        log("  NetSolP not installed — skipping solubility prediction")
+        return designs
+
+    # Check for ONNX model
+    model_file = os.path.join(_NETSOLP_DIR, "models", "Solubility_ESM1b_distilled_quantized.onnx")
+    if not os.path.exists(model_file):
+        log("  NetSolP ONNX models not found — skipping solubility prediction")
+        return designs
+
+    # Write sequences to temp FASTA
+    import tempfile
+    seqs = {}
+    for d in designs:
+        did = d.get("design_id", "")
+        seq = d.get("binder_sequence", "")
+        if did and seq and len(seq) > 5:
+            seqs[did] = seq
+
+    if not seqs:
+        return designs
+
+    fd, fasta_path = tempfile.mkstemp(suffix=".fasta")
+    os.close(fd)
+    fd2, out_csv = tempfile.mkstemp(suffix=".csv")
+    os.close(fd2)
+
+    try:
+        with open(fasta_path, "w") as f:
+            for did, seq in seqs.items():
+                f.write(f">{did}\n{seq}\n")
+
+        # Run NetSolP in esmfold env
+        cmd = [
+            "conda", "run", "--no-capture-output", "-n", "esmfold",
+            "python", predict_script,
+            "--FASTA_PATH", fasta_path,
+            "--OUTPUT_PATH", out_csv,
+            "--MODEL_TYPE", "Distilled",
+            "--PREDICTION_TYPE", "S",
+            "--MODELS_PATH", os.path.join(_NETSOLP_DIR, "models"),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if r.returncode != 0:
+            log(f"  NetSolP failed: {r.stderr[-500:]}")
+            return designs
+
+        # Parse output CSV
+        import csv as _csv
+        sol_scores = {}
+        with open(out_csv) as f:
+            reader = _csv.DictReader(f)
+            for row in reader:
+                sid = row.get("sid", row.get("ID", ""))
+                sol = row.get("predicted_solubility", "")
+                if sid and sol:
+                    try:
+                        sol_scores[sid] = float(sol)
+                    except ValueError:
+                        pass
+
+        # Apply to designs
+        n_scored = 0
+        for d in designs:
+            did = d.get("design_id", "")
+            if did in sol_scores:
+                d["netsolp_solubility"] = round(sol_scores[did], 3)
+                n_scored += 1
+
+        if n_scored:
+            vals = [d["netsolp_solubility"] for d in designs
+                    if "netsolp_solubility" in d]
+            log(f"  NetSolP: {n_scored} designs scored")
+            log(f"  Solubility: min={min(vals):.3f}, median={sorted(vals)[len(vals)//2]:.3f}, "
+                f"max={max(vals):.3f}")
+
+    except Exception as e:
+        log(f"  NetSolP error: {e}")
+    finally:
+        for p in (fasta_path, out_csv):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    return designs
+
+
 # ── Rosetta interface scoring ──────────────────────────────────────────────────
 
 def rosetta_score_interfaces(designs, val_dir, dry_run=False):
@@ -3184,7 +3564,7 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
 
     Adds to each design dict:
         rosetta_dG, rosetta_sc, rosetta_hbonds, rosetta_bunsats,
-        rosetta_dsasa, rosetta_dg_dsasa, rosetta_packstat
+        rosetta_dsasa, rosetta_dg_dsasa, rosetta_packstat, rosetta_sap
     """
     # Collect designs that have a complex structure file (CIF or PDB fallback)
     to_score = []
@@ -3284,6 +3664,15 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
         "    'scorefxn=\"scorefxn\" ignore_surface_res=\"false\" '\n"
         "    'use_ddG_style=\"true\" dalphaball_sasa=\"1\" probe_radius=\"1.1\" '\n"
         "    'burial_cutoff_apo=\"0.2\" confidence=\"0\" />')\n"
+        "# SAP score (Surface Aggregation Propensity)\n"
+        "try:\n"
+        "    from pyrosetta.rosetta.core.pack.guidance_scoreterms.sap import calculate_sap\n"
+        "    from pyrosetta.rosetta.core.select.residue_selector import TrueResidueSelector\n"
+        "    all_res = TrueResidueSelector()\n"
+        "    sap_total = calculate_sap(pose, all_res, all_res, all_res)\n"
+        "except Exception:\n"
+        "    sap_total = float('nan')\n"
+        "\n"
         "result = {\n"
         "    'rosetta_dG': iam.get_interface_dG(),\n"
         "    'rosetta_sc': data.sc_value,\n"
@@ -3292,6 +3681,7 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
         "    'rosetta_dsasa': iam.get_interface_delta_sasa(),\n"
         "    'rosetta_dg_dsasa': data.dG_dSASA_ratio * 100,\n"
         "    'rosetta_packstat': iam.get_interface_packstat(),\n"
+        "    'rosetta_sap': sap_total,\n"
         "}\n"
         "with open(out_path, 'w') as f:\n"
         "    json.dump(result, f)\n"
@@ -3408,7 +3798,7 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
         log(f"Rosetta scoring FAILED: {e}")
         for d in to_score:
             for k in ("rosetta_dG", "rosetta_sc", "rosetta_hbonds", "rosetta_bunsats",
-                       "rosetta_dsasa", "rosetta_dg_dsasa", "rosetta_packstat"):
+                       "rosetta_dsasa", "rosetta_dg_dsasa", "rosetta_packstat", "rosetta_sap"):
                 d[k] = float("nan")
         return designs
 
@@ -3431,7 +3821,7 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
             scored += 1
         else:
             for k in ("rosetta_dG", "rosetta_sc", "rosetta_hbonds", "rosetta_bunsats",
-                       "rosetta_dsasa", "rosetta_dg_dsasa", "rosetta_packstat"):
+                       "rosetta_dsasa", "rosetta_dg_dsasa", "rosetta_packstat", "rosetta_sap"):
                 d[k] = float("nan")
 
     log(f"Rosetta: scored {scored}/{len(to_score)} structures successfully.")
@@ -3730,7 +4120,7 @@ def write_rankings_csv(designs, out_path):
     """
     # Core columns always present
     core_fields = [
-        "rank", "design_id", "binder_sequence",
+        "rank", "design_id", "binder_sequence", "tool", "binder_length",
         "combined_score", "iptm_source",
         "boltz_iptm", "boltz_ptm", "boltz_complex_plddt", "boltz_iplddt",
         "boltz_binder_plddt", "boltz_min_interface_pae", "boltz_mean_interface_pae",
@@ -3738,6 +4128,10 @@ def write_rankings_csv(designs, out_path):
         "esmfold_plddt",
         "native_score", "native_score_name",
         "site_contact_fraction", "site_n_contacted", "site_n_total", "site_geometric_pass",
+        "site_interface_fraction", "site_interface_binder_res", "site_interface_total_res",
+        "site_centroid_dist_heavy", "site_centroid_dist_CA",
+        "site_cos_angle",
+        "refolding_rmsd",
     ]
 
     # RFdiffusion-specific
@@ -3782,7 +4176,8 @@ def write_rankings_csv(designs, out_path):
     # Rosetta interface scoring
     rosetta_fields = [
         "rosetta_dG", "rosetta_sc", "rosetta_hbonds", "rosetta_bunsats",
-        "rosetta_dsasa", "rosetta_dg_dsasa", "rosetta_packstat",
+        "rosetta_dsasa", "rosetta_dg_dsasa", "rosetta_packstat", "rosetta_sap",
+        "netsolp_solubility",
     ]
 
     # Universal SS fraction + composition columns (computed for all tools)
@@ -3955,7 +4350,6 @@ def _merge_binder_with_target(binder_cif, target_pdb, out_pdb):
 
     # Write binder as chain B
     atom_serial = len(out_lines) + 1
-    prev_seq = None
     for atom_name, res_name, seq_id, x, y, z, elem in transformed:
         an = f" {atom_name:<3s}" if len(atom_name) < 4 else atom_name
         out_lines.append(
@@ -3963,7 +4357,6 @@ def _merge_binder_with_target(binder_cif, target_pdb, out_pdb):
             f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {elem:>2s}"
         )
         atom_serial += 1
-        prev_seq = seq_id
 
     out_lines.append("TER")
     out_lines.append("END")
@@ -3973,7 +4366,7 @@ def _merge_binder_with_target(binder_cif, target_pdb, out_pdb):
 
 
 def copy_top_designs(designs, top_dir, target_pdb=None, n=50, site_resnums=None,
-                     target_residues=None):
+                     target_residues=None, cos_angle=None):
     """Copy top N complex structures to top_designs/ and generate PyMOL scripts."""
     top_dir = Path(top_dir)
     top_dir.mkdir(exist_ok=True)
@@ -4025,7 +4418,7 @@ def copy_top_designs(designs, top_dir, target_pdb=None, n=50, site_resnums=None,
         shutil.copy2(target_pdb, top_dir / target_name)
 
     # ── PML 1: align all on target, color by chain ────────────────────────
-    _write_pml_by_chain(top_dir, copied_files, target_name, site_resnums)
+    _write_pml_by_chain(top_dir, copied_files, target_name, site_resnums, cos_angle=cos_angle)
 
     # ── PML 2: align all on target, color binders by iPTM ────────────────
     _write_pml_by_iptm(top_dir, copied_files, target_name, site_resnums)
@@ -4036,7 +4429,8 @@ def copy_top_designs(designs, top_dir, target_pdb=None, n=50, site_resnums=None,
                             target_residues=target_residues)
 
 
-def _write_pml_by_chain(top_dir, copied_files, target_name, site_resnums=None):
+def _write_pml_by_chain(top_dir, copied_files, target_name, site_resnums=None,
+                        cos_angle=None):
     """PyMOL script: load all structures, align to target, color by chain."""
     lines = [
         "# Auto-generated by generate_binders3.py",
@@ -4094,6 +4488,87 @@ def _write_pml_by_chain(top_dir, copied_files, target_name, site_resnums=None):
         obj = Path(fname).stem
         if i >= 5:
             lines.append(f'disable {obj}')
+
+    # Add cone visualization if cos_angle filter was used
+    if cos_angle is not None and site_resnums and target_name:
+        import math
+        obj = Path(target_name).stem
+        resi_str = "+".join(str(r) for r in site_resnums)
+        half_angle = math.acos(cos_angle)
+        cone_len = 20.0  # Å, length of cone visualization
+        lines.extend([
+            "",
+            "# ── Surface normal cone (cos filter visualization) ──",
+            f"# cos >= {cos_angle:.2f} → half-angle = {math.degrees(half_angle):.0f}°",
+            "python",
+            "import numpy as np",
+            "from pymol import cmd",
+            "from pymol.cgo import *",
+            "",
+            f"# Get site CA centroid",
+            f"site_model = cmd.get_model('{obj} and chain A and resi {resi_str} and name CA')",
+            "site_coords = np.array([[a.coord[0], a.coord[1], a.coord[2]] for a in site_model.atom])",
+            "site_center = site_coords.mean(axis=0)",
+            "",
+            f"# Get target centroid (all CAs)",
+            f"target_model = cmd.get_model('{obj} and chain A and name CA')",
+            "target_coords = np.array([[a.coord[0], a.coord[1], a.coord[2]] for a in target_model.atom])",
+            "target_center = target_coords.mean(axis=0)",
+            "",
+            "# Outward normal",
+            "normal = site_center - target_center",
+            "normal = normal / np.linalg.norm(normal)",
+            "",
+            "# Draw normal line (yellow cylinder)",
+            f"tip = site_center + normal * {cone_len}",
+            "cgo_normal = [",
+            "    CYLINDER,",
+            "    site_center[0], site_center[1], site_center[2],",
+            "    tip[0], tip[1], tip[2],",
+            "    0.3,  # radius",
+            "    1.0, 1.0, 0.0,  # yellow",
+            "    1.0, 1.0, 0.0,",
+            "]",
+            "cmd.load_cgo(cgo_normal, 'site_normal')",
+            "",
+            "# Draw cone boundary (transparent)",
+            f"half_angle = {half_angle}",
+            f"cone_len = {cone_len}",
+            "cone_radius = cone_len * np.tan(half_angle)",
+            "",
+            "# Generate cone edge lines",
+            "# Find two perpendicular vectors to normal",
+            "if abs(normal[0]) < 0.9:",
+            "    perp1 = np.cross(normal, [1, 0, 0])",
+            "else:",
+            "    perp1 = np.cross(normal, [0, 1, 0])",
+            "perp1 = perp1 / np.linalg.norm(perp1)",
+            "perp2 = np.cross(normal, perp1)",
+            "",
+            "# Draw 12 lines around the cone edge",
+            "cgo_cone = []",
+            "for i in range(12):",
+            "    angle = 2 * np.pi * i / 12",
+            "    edge_dir = normal * cone_len + cone_radius * (np.cos(angle) * perp1 + np.sin(angle) * perp2)",
+            "    edge_pt = site_center + edge_dir",
+            "    cgo_cone.extend([",
+            "        CYLINDER,",
+            "        site_center[0], site_center[1], site_center[2],",
+            "        edge_pt[0], edge_pt[1], edge_pt[2],",
+            "        0.15,  # thin lines",
+            "        0.0, 1.0, 1.0,  # cyan",
+            "        0.0, 1.0, 1.0,",
+            "    ])",
+            "",
+            "cmd.load_cgo(cgo_cone, 'cos_cone')",
+            "",
+            "# Sphere at site centroid",
+            "cmd.pseudoatom('site_centroid', pos=list(site_center), vdw=1.5)",
+            "cmd.color('yellow', 'site_centroid')",
+            "cmd.show('spheres', 'site_centroid')",
+            "",
+            "python end",
+        ])
 
     lines.extend([
         "",
@@ -4570,7 +5045,7 @@ def plot_dashboard(all_designs, out_path, title="Binder Design Summary"):
         plddts = [x for x in plddts if x is not None and x == x]  # drop None/NaN
         ax2.hist(plddts, bins=15, alpha=0.6, color=colors.get(t, "grey"),
                  label=t, edgecolor="white")
-    ax2.axvline(70, color="red", lw=1, ls="--", label="threshold=70")
+    ax2.axvline(80, color="red", lw=1, ls="--", label="threshold=80")
     ax2.set_xlabel("ESMFold binder pLDDT"); ax2.set_ylabel("Count")
     ax2.set_title("ESMFold pre-filter distribution")
     ax2.legend(fontsize=8)
@@ -4703,8 +5178,8 @@ def main():
                              'Overrides --mode for specified tools only.')
     parser.add_argument("--out_dir",   required=True,
                         help="Output directory")
-    parser.add_argument("--esmfold_plddt_threshold", type=float, default=70.0,
-                        help="ESMFold pre-filter threshold (default: 70)")
+    parser.add_argument("--esmfold_plddt_threshold", type=float, default=80.0,
+                        help="ESMFold pre-filter threshold (default: 80)")
     parser.add_argument("--max_validate", type=int, default=20,
                         help="Max designs sent to Boltz validation per tool (default: 20)")
     parser.add_argument("--score_weights", default="0.4,0.5,0.1",
@@ -4729,6 +5204,23 @@ def main():
                              "(within --max_site_dist) for a design to pass. "
                              "0.0=only exclude designs with zero contacts (default). "
                              "0.3=require 30%% of site residues contacted.")
+    parser.add_argument("--min_site_interface_fraction", type=float, default=None,
+                        help="Minimum fraction of binder interface residues that contact "
+                             "SITE residues (vs non-site target residues). Filters designs "
+                             "that dock beside the site rather than on top. "
+                             "0.5=at least 50%% of binder interface at site. Default: disabled.")
+    parser.add_argument("--max_site_centroid_dist", type=float, default=None,
+                        help="Maximum distance (Angstrom) between binder centroid and site "
+                             "centroid. Selects binders sitting directly on top of the site. "
+                             "Typical: 10-15 Å. Default: disabled.")
+    parser.add_argument("--centroid_atoms", choices=["CA", "heavy"], default="CA",
+                        help="Which atoms to use for site centroid: 'CA' = alpha carbon "
+                             "(1 per residue, true geometric center), 'heavy' = all heavy atoms. "
+                             "Default: CA.")
+    parser.add_argument("--interface_dist", type=float, default=5.0,
+                        help="Distance cutoff (Angstrom) defining binder interface residues "
+                             "for SIF and centroid calculations. 5.0=direct contacts, "
+                             "7.0=broader footprint. Default: 5.0.")
     parser.add_argument("--top_n", type=int, default=50,
                         help="Number of top designs to copy to top_designs/ (default: 50)")
     parser.add_argument("--plip_top", type=int, default=10,
@@ -4888,7 +5380,21 @@ def main():
             tool_results[tool] = f"OK ({len(designs)} designs)"
         except Exception as e:
             log(f"{tool} FAILED: {e}")
-            tool_results[tool] = f"FAILED: {e}"
+            # Retry once after GPU cleanup (crashed tools may leave zombie GPU processes)
+            _cleanup_gpu()
+            log(f"  Retrying {tool} after GPU cleanup...")
+            try:
+                designs = RUNNERS[tool](
+                    target_path, chain_id, site_resnums, length_min, length_max,
+                    n, out_dir / tool, args.dry_run, **extra)
+                all_designs.extend(designs)
+                tool_results[tool] = f"OK ({len(designs)} designs, retry)"
+                log(f"  {tool} succeeded on retry")
+            except Exception as e2:
+                log(f"{tool} FAILED on retry: {e2}")
+                tool_results[tool] = f"FAILED: {e}"
+        # Clean up GPU between tools to prevent memory leaks from crashed subprocesses
+        _cleanup_gpu()
 
     if not all_designs:
         log("No designs collected. Exiting.")
@@ -4971,14 +5477,20 @@ def main():
         # Recombine for downstream processing
         passing = backbone_designs + native_designs
 
-    if args.max_site_dist > 0:
+    need_geometric = (args.max_site_dist > 0 or
+                      getattr(args, 'min_site_interface_fraction', None) is not None or
+                      getattr(args, 'max_site_centroid_dist', None) is not None or
+                      getattr(args, 'min_site_cos', None) is not None)
+    if need_geometric:
+        max_dist = args.max_site_dist if args.max_site_dist > 0 else 999.0
         log(f"\n{'─' * 50}")
         log("STEP: Geometric site proximity filter")
         log(f"{'─' * 50}")
         geometric_site_filter(all_designs, site_resnums=site_resnums,
                               target_residues=tchain.get("residues"),
-                              max_dist=args.max_site_dist,
+                              max_dist=max_dist,
                               min_site_fraction=args.min_site_fraction,
+                              interface_dist=args.interface_dist,
                               dry_run=args.dry_run)
 
     log(f"\n{'─' * 50}")
