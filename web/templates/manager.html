@@ -1,0 +1,789 @@
+{% extends "base.html" %}
+{% block title %}BinderFlow — Data Manager{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold">Data Manager</h1>
+        <p class="text-sm text-slate-400 mt-1">
+            <span id="total-count">{{ jobs|length }}</span> tracked entries
+            <span class="text-slate-600 mx-1">|</span>
+            <span class="text-slate-500">{{ outputs_base }}</span>
+        </p>
+    </div>
+    <div class="flex gap-3">
+        <button onclick="openImportModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-sm font-medium">
+            Import Path
+        </button>
+        <button onclick="scanDisk()" id="scan-btn" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-medium">
+            Scan Disk
+        </button>
+    </div>
+</div>
+
+<!-- Filter bar -->
+<div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-4">
+    <div class="flex flex-wrap gap-3 items-end">
+        <div>
+            <label class="block text-xs text-slate-500 mb-1">Project</label>
+            <select id="filter-project" onchange="applyFilters()" class="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm min-w-[140px]">
+                <option value="">All projects</option>
+                {% for p in projects %}
+                <option value="{{ p }}">{{ p }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-500 mb-1">User</label>
+            <select id="filter-user" onchange="applyFilters()" class="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm min-w-[120px]">
+                <option value="">All users</option>
+                {% for u in users %}
+                <option value="{{ u }}">{{ u }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-500 mb-1">Machine</label>
+            <select id="filter-machine" onchange="applyFilters()" class="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm min-w-[120px]">
+                <option value="">All machines</option>
+                {% for m in machines %}
+                <option value="{{ m }}">{{ m }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-500 mb-1">Status</label>
+            <select id="filter-status" onchange="applyFilters()" class="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm min-w-[130px]">
+                <option value="">All statuses</option>
+                <option value="completed">Completed</option>
+                <option value="running">Running</option>
+                <option value="failed">Failed</option>
+                <option value="archived">Archived</option>
+                <option value="unregistered">Unregistered</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-slate-500 mb-1">Type</label>
+            <select id="filter-type" onchange="applyFilters()" class="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm min-w-[110px]">
+                <option value="">All types</option>
+                <option value="generate">Generate</option>
+                <option value="rerank">Rerank</option>
+                <option value="imported">Imported</option>
+            </select>
+        </div>
+        <div class="flex-1 min-w-[200px]">
+            <label class="block text-xs text-slate-500 mb-1">Search</label>
+            <input type="text" id="filter-search" oninput="applyFilters()" placeholder="Search name, project, user..."
+                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm">
+        </div>
+        <button onclick="resetFilters()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 border border-slate-600 rounded hover:bg-slate-700">
+            Reset
+        </button>
+    </div>
+</div>
+
+<!-- Results table -->
+<div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="text-slate-400 border-b border-slate-700 bg-slate-850">
+                <tr>
+                    <th class="py-2 px-3 w-8"><input type="checkbox" id="select-all" onchange="toggleSelectAll(this)"></th>
+                    <th class="text-left py-2 px-3 cursor-pointer hover:text-slate-200" onclick="sortTable('name')">Name</th>
+                    <th class="text-left py-2 px-3 cursor-pointer hover:text-slate-200" onclick="sortTable('project')">Project</th>
+                    <th class="text-left py-2 px-3 cursor-pointer hover:text-slate-200" onclick="sortTable('username')">User</th>
+                    <th class="text-left py-2 px-3">Machine</th>
+                    <th class="text-left py-2 px-3">Tools</th>
+                    <th class="text-left py-2 px-3">Type</th>
+                    <th class="text-left py-2 px-3 cursor-pointer hover:text-slate-200" onclick="sortTable('status')">Status</th>
+                    <th class="text-left py-2 px-3 cursor-pointer hover:text-slate-200" onclick="sortTable('date')">Date</th>
+                    <th class="text-left py-2 px-3">Size</th>
+                    <th class="text-left py-2 px-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="manager-body">
+                {% for j in jobs %}
+                <tr class="border-b border-slate-800 hover:bg-slate-800/50 manager-row"
+                    data-id="{{ j.id }}"
+                    data-name="{{ j.name|lower }}"
+                    data-project="{{ (j.project or '')|lower }}"
+                    data-user="{{ (j.username or '')|lower }}"
+                    data-machine="{{ (j.machine or '')|lower }}"
+                    data-status="{{ 'archived' if j.archived else j.status }}"
+                    data-type="{{ j.job_type or 'generate' }}"
+                    data-date="{{ j.created_at or 0 }}"
+                    data-outdir="{{ j.out_dir or '' }}"
+                    data-local="{{ 'true' if j.machine == hostname else 'false' }}">
+                    <td class="py-2 px-3"><input type="checkbox" class="row-check" value="{{ j.id }}" onchange="updateBulkBar()"></td>
+                    <td class="py-2 px-3">
+                        <div class="font-medium text-slate-200 truncate max-w-[200px]" title="{{ j.name }}">{{ j.name }}</div>
+                        <div class="text-xs text-slate-500 truncate max-w-[200px]" title="{{ j.out_dir or '' }}">{{ j.out_dir or '' }}</div>
+                    </td>
+                    <td class="py-2 px-3"><span class="text-blue-400 text-xs">{{ j.project or '-' }}</span></td>
+                    <td class="py-2 px-3 text-slate-400 text-xs">{{ j.username or '-' }}</td>
+                    <td class="py-2 px-3 text-slate-500 text-xs">{{ j.machine or '-' }}</td>
+                    <td class="py-2 px-3">
+                        <div class="text-xs text-slate-400 truncate max-w-[150px]" title="{{ j.tools or '' }}">{{ j.tools or '-' }}</div>
+                    </td>
+                    <td class="py-2 px-3">
+                        {% if j.job_type == 'imported' %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-purple-900/60 text-purple-300">imported</span>
+                        {% elif j.job_type == 'rerank' %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-cyan-900/60 text-cyan-300">rerank</span>
+                        {% else %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-300">generate</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2 px-3">
+                        {% if j.archived %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-500">archived</span>
+                        {% elif j.status == 'completed' %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-green-900/60 text-green-300">completed</span>
+                        {% elif j.status == 'running' %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-blue-900/60 text-blue-300 animate-pulse">running</span>
+                        {% elif j.status == 'failed' %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-red-900/60 text-red-300">failed</span>
+                        {% elif j.status == 'cancelled' %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-400">cancelled</span>
+                        {% else %}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-400">{{ j.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2 px-3 text-slate-400 text-xs whitespace-nowrap" data-timestamp="{{ j.created_at or 0 }}">
+                        {{ j.created_at|int if j.created_at else '-' }}
+                    </td>
+                    <td class="py-2 px-3 text-slate-500 text-xs size-cell" data-path="{{ j.out_dir or '' }}">—</td>
+                    <td class="py-2 px-3">
+                        <div class="flex gap-1 flex-wrap">
+                            {% if j.status == 'completed' or j.job_type == 'imported' %}
+                            <a href="/results/{{ j.id }}" class="px-2 py-0.5 rounded text-xs bg-green-800/60 text-green-300 hover:bg-green-700/60">View</a>
+                            {% if j.job_type != 'rerank' %}
+                            <a href="/rerank?results_dir={{ j.out_dir or '' }}" class="px-2 py-0.5 rounded text-xs bg-cyan-800/60 text-cyan-300 hover:bg-cyan-700/60">Rerank</a>
+                            {% endif %}
+                            {% elif j.status == 'running' %}
+                            <a href="/monitor/{{ j.id }}" class="px-2 py-0.5 rounded text-xs bg-blue-800/60 text-blue-300 hover:bg-blue-700/60">Monitor</a>
+                            {% endif %}
+                            {% if j.archived %}
+                            <button onclick="unarchiveJob('{{ j.id }}')" class="px-2 py-0.5 rounded text-xs bg-blue-800/60 text-blue-300 hover:bg-blue-700/60"
+                                    {% if j.machine != hostname %}disabled title="Remote entry"{% endif %}>Unarchive</button>
+                            {% else %}
+                            <button onclick="archiveJob('{{ j.id }}')" class="px-2 py-0.5 rounded text-xs bg-slate-700 text-slate-400 hover:bg-slate-600"
+                                    {% if j.machine != hostname %}disabled title="Remote entry"{% endif %}>Archive</button>
+                            {% endif %}
+                            <button onclick="deleteJob('{{ j.id }}', '{{ j.out_dir or '' }}')" class="px-2 py-0.5 rounded text-xs bg-red-900/60 text-red-400 hover:bg-red-800/60"
+                                    {% if j.machine != hostname %}disabled title="Remote entry"{% endif %}>Delete</button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Empty state -->
+    {% if not jobs %}
+    <div class="text-center py-12 text-slate-500">
+        <p>No jobs found. Click "Scan Disk" to discover result directories.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Pagination bar -->
+<div class="flex items-center justify-between mt-3 px-1">
+    <div class="flex items-center gap-2">
+        <label class="text-xs text-slate-500">Per page:</label>
+        <select id="page-size" onchange="changePage(1)" class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="0">All</option>
+        </select>
+        <span class="text-xs text-slate-500" id="page-info"></span>
+    </div>
+    <div class="flex gap-1" id="page-buttons"></div>
+</div>
+
+<!-- Scan results summary (hidden initially) -->
+<div id="scan-results" class="hidden mt-4 bg-slate-900 border border-amber-700/50 rounded-lg p-4">
+    <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-amber-400">Unregistered Directories Found</h3>
+        <span id="orphan-count" class="text-xs text-slate-400"></span>
+    </div>
+    <div id="scan-info" class="text-sm text-slate-400"></div>
+</div>
+
+<!-- Bulk action bar (fixed bottom) -->
+<div id="bulk-bar" class="fixed bottom-0 left-0 right-0 bg-slate-800 border-t border-slate-600 p-3 hidden z-40">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+        <span class="text-sm text-slate-300"><strong id="selected-count">0</strong> selected</span>
+        <div class="flex gap-2">
+            <button onclick="bulkAction('archive')" class="px-4 py-1.5 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm">Archive</button>
+            <button onclick="bulkAction('unarchive')" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm">Unarchive</button>
+            <button onclick="bulkAction('delete')" class="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-sm">Delete</button>
+            <button onclick="clearSelection()" class="px-4 py-1.5 border border-slate-500 text-slate-300 hover:bg-slate-700 rounded text-sm">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- Import modal -->
+<div id="import-modal" class="fixed inset-0 bg-black/60 hidden z-50 flex items-center justify-center">
+    <div class="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-lg mx-4">
+        <h2 class="text-lg font-semibold mb-4">Import Results Directory</h2>
+        <div class="space-y-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Directory path</label>
+                <input type="text" id="import-path" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="Any path — copied (not moved) to {{ outputs_base }}/{project}/ if outside">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Project</label>
+                <input type="text" id="import-project" list="import-projects" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="Project name">
+                <datalist id="import-projects">
+                    {% for p in projects %}
+                    <option value="{{ p }}">
+                    {% endfor %}
+                </datalist>
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Job name</label>
+                <input type="text" id="import-name" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="Auto-extracted from directory name">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Target PDB path <span class="text-slate-600">(optional)</span></label>
+                <input type="text" id="import-target" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="/path/to/target.pdb">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Binding site <span class="text-slate-600">(optional, for red sticks in viewer)</span></label>
+                <input type="text" id="import-site" class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="e.g. A:372,375,378,381">
+            </div>
+            <div id="import-feedback" class="hidden text-sm rounded p-3"></div>
+        </div>
+        <div class="flex justify-end gap-3 mt-6">
+            <button onclick="closeImportModal()" class="px-4 py-2 border border-slate-600 text-slate-300 hover:bg-slate-800 rounded text-sm">Cancel</button>
+            <button onclick="doImport()" id="import-submit-btn" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-medium">Import</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete confirm modal -->
+<div id="delete-modal" class="fixed inset-0 bg-black/60 hidden z-50 flex items-center justify-center">
+    <div class="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md mx-4">
+        <h2 class="text-lg font-semibold text-red-400 mb-3">Delete Job Entry</h2>
+        <p class="text-sm text-slate-300 mb-4" id="delete-msg">Remove this entry from the database?</p>
+        <div class="flex items-center gap-2 mb-4">
+            <input type="checkbox" id="delete-files-check">
+            <label for="delete-files-check" class="text-sm text-slate-400">Also delete files on disk</label>
+        </div>
+        <div id="delete-size-info" class="hidden text-xs text-slate-500 mb-4 ml-6"></div>
+        <div class="flex justify-end gap-3">
+            <button onclick="closeDeleteModal()" class="px-4 py-2 border border-slate-600 text-slate-300 hover:bg-slate-800 rounded text-sm">Cancel</button>
+            <button onclick="confirmDelete()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded text-sm font-medium">Delete</button>
+        </div>
+    </div>
+</div>
+
+<!-- Bottom padding for bulk bar -->
+<div class="h-16"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const HOSTNAME = '{{ hostname }}';
+let pendingDeleteId = null;
+let pendingDeletePath = '';
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// -------- Timestamp formatting --------
+document.querySelectorAll('[data-timestamp]').forEach(el => {
+    const ts = parseFloat(el.dataset.timestamp);
+    if (ts > 0) {
+        const d = new Date(ts * 1000);
+        el.textContent = d.toLocaleDateString('en-CA') + ' ' + d.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+    } else {
+        el.textContent = '-';
+    }
+});
+
+// -------- Pagination state --------
+let currentPage = 1;
+let filteredRows = [];  // rows that pass current filters, in sort order
+
+function getPageSize() {
+    return parseInt(document.getElementById('page-size').value) || 0;
+}
+
+// -------- Filtering + Pagination --------
+function applyFilters() {
+    const project = document.getElementById('filter-project').value.toLowerCase();
+    const user = document.getElementById('filter-user').value.toLowerCase();
+    const machine = document.getElementById('filter-machine').value.toLowerCase();
+    const status = document.getElementById('filter-status').value;
+    const type = document.getElementById('filter-type').value;
+    const search = document.getElementById('filter-search').value.toLowerCase();
+
+    const allRows = Array.from(document.querySelectorAll('.manager-row'));
+    filteredRows = allRows.filter(row => {
+        if (project && row.dataset.project !== project) return false;
+        if (user && row.dataset.user !== user) return false;
+        if (machine && row.dataset.machine !== machine) return false;
+        if (status && row.dataset.status !== status) return false;
+        if (type && row.dataset.type !== type) return false;
+        if (search) {
+            const hay = row.dataset.name + ' ' + row.dataset.project + ' ' + row.dataset.user + ' ' + (row.dataset.outdir || '');
+            if (!hay.includes(search)) return false;
+        }
+        return true;
+    });
+
+    // Apply current sort to filtered set
+    sortRows(filteredRows);
+
+    document.getElementById('total-count').textContent = filteredRows.length;
+    changePage(1);
+}
+
+function resetFilters() {
+    document.getElementById('filter-project').value = '';
+    document.getElementById('filter-user').value = '';
+    document.getElementById('filter-machine').value = '';
+    document.getElementById('filter-status').value = '';
+    document.getElementById('filter-type').value = '';
+    document.getElementById('filter-search').value = '';
+    applyFilters();
+}
+
+// -------- Sorting --------
+let sortCol = 'date';
+let sortAsc = false;
+
+function sortRows(rows) {
+    rows.sort((a, b) => {
+        let va, vb;
+        if (sortCol === 'date') {
+            va = parseFloat(a.dataset.date) || 0;
+            vb = parseFloat(b.dataset.date) || 0;
+        } else if (sortCol === 'name') {
+            va = a.dataset.name; vb = b.dataset.name;
+        } else if (sortCol === 'project') {
+            va = a.dataset.project; vb = b.dataset.project;
+        } else if (sortCol === 'username') {
+            va = a.dataset.user; vb = b.dataset.user;
+        } else if (sortCol === 'status') {
+            va = a.dataset.status; vb = b.dataset.status;
+        } else {
+            va = a.dataset[sortCol] || ''; vb = b.dataset[sortCol] || '';
+        }
+        if (typeof va === 'number') return sortAsc ? va - vb : vb - va;
+        return sortAsc ? String(va).localeCompare(vb) : String(vb).localeCompare(va);
+    });
+}
+
+function sortTable(col) {
+    if (sortCol === col) sortAsc = !sortAsc;
+    else { sortCol = col; sortAsc = true; }
+    sortRows(filteredRows);
+    changePage(currentPage);
+}
+
+// -------- Page rendering --------
+function changePage(page) {
+    const pageSize = getPageSize();
+    const total = filteredRows.length;
+    const allRows = document.querySelectorAll('.manager-row');
+
+    if (pageSize === 0) {
+        // Show all — no pagination
+        currentPage = 1;
+        allRows.forEach(r => r.style.display = 'none');
+        filteredRows.forEach(r => r.style.display = '');
+        renderPageInfo(1, 1, total);
+        return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    currentPage = Math.max(1, Math.min(page, totalPages));
+    const start = (currentPage - 1) * pageSize;
+    const end = Math.min(start + pageSize, total);
+
+    // Hide all, then show only current page's rows
+    allRows.forEach(r => r.style.display = 'none');
+    for (let i = start; i < end; i++) {
+        filteredRows[i].style.display = '';
+    }
+
+    renderPageInfo(currentPage, totalPages, total);
+}
+
+function renderPageInfo(current, totalPages, totalItems) {
+    const pageSize = getPageSize();
+    const infoEl = document.getElementById('page-info');
+    const btnEl = document.getElementById('page-buttons');
+
+    if (pageSize === 0 || totalPages <= 1) {
+        infoEl.textContent = `${totalItems} entries`;
+        btnEl.innerHTML = '';
+        return;
+    }
+
+    const start = (current - 1) * pageSize + 1;
+    const end = Math.min(current * pageSize, totalItems);
+    infoEl.textContent = `${start}-${end} of ${totalItems}`;
+
+    // Build page buttons
+    let html = '';
+    const btnClass = 'px-2.5 py-1 rounded text-xs border';
+    const activeClass = 'bg-blue-600 border-blue-500 text-white';
+    const normalClass = 'bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700 cursor-pointer';
+    const disabledClass = 'bg-slate-800 border-slate-700 text-slate-600';
+
+    // Prev
+    html += `<button onclick="changePage(${current - 1})" class="${btnClass} ${current > 1 ? normalClass : disabledClass}" ${current <= 1 ? 'disabled' : ''}>&lt;</button>`;
+
+    // Page numbers (show max 7 buttons with ellipsis)
+    const pages = [];
+    if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+        pages.push(1);
+        if (current > 3) pages.push('...');
+        for (let i = Math.max(2, current - 1); i <= Math.min(totalPages - 1, current + 1); i++) pages.push(i);
+        if (current < totalPages - 2) pages.push('...');
+        pages.push(totalPages);
+    }
+
+    for (const p of pages) {
+        if (p === '...') {
+            html += `<span class="px-1.5 py-1 text-xs text-slate-500">...</span>`;
+        } else {
+            html += `<button onclick="changePage(${p})" class="${btnClass} ${p === current ? activeClass : normalClass}">${p}</button>`;
+        }
+    }
+
+    // Next
+    html += `<button onclick="changePage(${current + 1})" class="${btnClass} ${current < totalPages ? normalClass : disabledClass}" ${current >= totalPages ? 'disabled' : ''}>&gt;</button>`;
+
+    btnEl.innerHTML = html;
+}
+
+// -------- Select / Bulk --------
+function toggleSelectAll(master) {
+    document.querySelectorAll('.manager-row').forEach(row => {
+        if (row.style.display !== 'none') {
+            const local = row.dataset.local === 'true';
+            const cb = row.querySelector('.row-check');
+            if (cb && local) cb.checked = master.checked;
+        }
+    });
+    updateBulkBar();
+}
+
+function updateBulkBar() {
+    const checked = document.querySelectorAll('.row-check:checked');
+    const bar = document.getElementById('bulk-bar');
+    document.getElementById('selected-count').textContent = checked.length;
+    bar.classList.toggle('hidden', checked.length === 0);
+}
+
+function clearSelection() {
+    document.querySelectorAll('.row-check:checked').forEach(cb => cb.checked = false);
+    document.getElementById('select-all').checked = false;
+    updateBulkBar();
+}
+
+async function bulkAction(action) {
+    const ids = Array.from(document.querySelectorAll('.row-check:checked')).map(cb => cb.value);
+    if (!ids.length) return;
+
+    let deleteFiles = false;
+    if (action === 'delete') {
+        if (!confirm(`Delete ${ids.length} entries from the database?`)) return;
+        deleteFiles = confirm('Also delete files on disk? (Cancel = keep files)');
+    } else {
+        if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} ${ids.length} entries?`)) return;
+    }
+
+    const resp = await fetch('/api/manager/bulk', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action, job_ids: ids, delete_files: deleteFiles}),
+    });
+    const data = await resp.json();
+    if (data.errors && data.errors.length) {
+        alert(`Processed ${data.processed}, errors:\n${data.errors.join('\n')}`);
+    }
+    location.reload();
+}
+
+// -------- Single actions --------
+async function archiveJob(id) {
+    await fetch(`/api/jobs/${id}/archive`, {method: 'POST'});
+    location.reload();
+}
+
+async function unarchiveJob(id) {
+    const resp = await fetch(`/api/manager/${id}/unarchive`, {method: 'POST'});
+    if (resp.ok) location.reload();
+    else {
+        const data = await resp.json().catch(() => ({}));
+        alert('Failed: ' + (data.detail || 'Unknown error'));
+    }
+}
+
+function deleteJob(id, outDir) {
+    pendingDeleteId = id;
+    pendingDeletePath = outDir;
+    document.getElementById('delete-msg').textContent =
+        `Remove "${id}" from the database?`;
+    document.getElementById('delete-files-check').checked = false;
+    document.getElementById('delete-size-info').classList.add('hidden');
+    document.getElementById('delete-modal').classList.remove('hidden');
+
+    // Load size info
+    if (outDir) {
+        fetch(`/api/manager/disksize?path=${encodeURIComponent(outDir)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.size_human) {
+                    const el = document.getElementById('delete-size-info');
+                    el.textContent = `Directory size: ${data.size_human}`;
+                    el.classList.remove('hidden');
+                }
+            }).catch(() => {});
+    }
+}
+
+function closeDeleteModal() {
+    document.getElementById('delete-modal').classList.add('hidden');
+    pendingDeleteId = null;
+}
+
+async function confirmDelete() {
+    if (!pendingDeleteId) return;
+    const deleteFiles = document.getElementById('delete-files-check').checked;
+    if (deleteFiles && !confirm('This will permanently delete all files. Are you sure?')) return;
+
+    const resp = await fetch(`/api/manager/${pendingDeleteId}?delete_files=${deleteFiles}`, {method: 'DELETE'});
+    if (resp.ok) {
+        closeDeleteModal();
+        location.reload();
+    } else {
+        alert('Failed: ' + (await resp.json()).detail);
+    }
+}
+
+// -------- Disk scan --------
+async function scanDisk() {
+    const btn = document.getElementById('scan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+
+    try {
+        const resp = await fetch('/api/manager/scan');
+        const data = await resp.json();
+        const orphans = data.orphans || [];
+
+        const panel = document.getElementById('scan-results');
+        const info = document.getElementById('scan-info');
+        document.getElementById('orphan-count').textContent =
+            `${orphans.length} found (${data.scanned} dirs scanned)`;
+
+        if (orphans.length === 0) {
+            info.innerHTML = '<p class="text-green-400">All directories are already tracked.</p>';
+            panel.classList.remove('hidden');
+        } else {
+            info.innerHTML = '';
+            panel.classList.remove('hidden');
+
+            // Add orphan rows to the table
+            const tbody = document.getElementById('manager-body');
+            orphans.forEach(o => {
+                // Skip if row already exists
+                if (document.querySelector(`tr[data-outdir="${o.path}"]`)) return;
+
+                const tr = document.createElement('tr');
+                tr.className = 'border-b border-slate-800 hover:bg-slate-800/50 manager-row';
+                tr.dataset.id = '';
+                tr.dataset.name = o.name.toLowerCase();
+                tr.dataset.project = o.project.toLowerCase();
+                tr.dataset.user = '';
+                tr.dataset.machine = '';
+                tr.dataset.status = 'unregistered';
+                tr.dataset.type = '';
+                tr.dataset.date = o.date || '';
+                tr.dataset.outdir = o.path;
+                tr.dataset.local = 'false';
+
+                const toolStr = o.tools.length ? escapeHtml(o.tools.join(', ')) : '-';
+                const countStr = o.design_count > 0 ? `${o.design_count} designs` : '';
+                const rankBadge = o.has_rankings
+                    ? '<span class="text-green-400 text-xs">has rankings</span>'
+                    : '<span class="text-red-400 text-xs">no rankings.csv</span>';
+
+                tr.innerHTML = `
+                    <td class="py-2 px-3"></td>
+                    <td class="py-2 px-3">
+                        <div class="font-medium text-slate-200 truncate max-w-[200px]"></div>
+                        <div class="text-xs text-slate-500 truncate max-w-[200px]"></div>
+                    </td>
+                    <td class="py-2 px-3"><span class="text-blue-400 text-xs"></span></td>
+                    <td class="py-2 px-3 text-slate-500 text-xs">-</td>
+                    <td class="py-2 px-3 text-slate-500 text-xs">-</td>
+                    <td class="py-2 px-3">
+                        <div class="text-xs text-slate-400 truncate max-w-[150px]">${toolStr}</div>
+                        <div class="text-xs text-slate-600">${countStr}</div>
+                    </td>
+                    <td class="py-2 px-3">-</td>
+                    <td class="py-2 px-3">
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-amber-900/60 text-amber-300">unregistered</span>
+                        ${rankBadge}
+                    </td>
+                    <td class="py-2 px-3 text-slate-400 text-xs">${escapeHtml(o.date || '-')}</td>
+                    <td class="py-2 px-3 text-slate-500 text-xs size-cell">-</td>
+                    <td class="py-2 px-3">
+                        <div class="flex gap-1"></div>
+                    </td>
+                `;
+                // Set text content safely (no XSS)
+                const nameCells = tr.querySelectorAll('td:nth-child(2) div');
+                nameCells[0].textContent = o.name;
+                nameCells[0].title = o.name;
+                nameCells[1].textContent = o.path;
+                nameCells[1].title = o.path;
+                tr.querySelector('td:nth-child(3) span').textContent = o.project;
+                // Set data-path safely on size cell
+                tr.querySelector('.size-cell').dataset.path = o.path;
+                // Add import button with data attributes (no inline event handler)
+                if (o.has_rankings) {
+                    const btn = document.createElement('button');
+                    btn.className = 'px-2 py-0.5 rounded text-xs bg-amber-700/60 text-amber-200 hover:bg-amber-600/60 import-orphan-btn';
+                    btn.textContent = 'Import';
+                    btn.dataset.path = o.path;
+                    btn.dataset.project = o.project;
+                    btn.dataset.name = o.name;
+                    btn.addEventListener('click', () => openImportModal(btn.dataset.path, btn.dataset.project, btn.dataset.name));
+                    tr.querySelector('td:last-child .flex').appendChild(btn);
+                }
+                tbody.prepend(tr);
+            });
+        }
+    } catch (err) {
+        alert('Scan failed: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Scan Disk';
+    }
+}
+
+// -------- Import --------
+function openImportModal(path, project, name) {
+    document.getElementById('import-path').value = path || '';
+    document.getElementById('import-project').value = project || '';
+    document.getElementById('import-name').value = name || '';
+    document.getElementById('import-feedback').classList.add('hidden');
+    document.getElementById('import-modal').classList.remove('hidden');
+}
+
+function closeImportModal() {
+    document.getElementById('import-modal').classList.add('hidden');
+}
+
+async function doImport() {
+    const path = document.getElementById('import-path').value.trim();
+    const project = document.getElementById('import-project').value.trim();
+    const name = document.getElementById('import-name').value.trim();
+    const target = document.getElementById('import-target').value.trim();
+    const site = document.getElementById('import-site').value.trim();
+    const fb = document.getElementById('import-feedback');
+    const btn = document.getElementById('import-submit-btn');
+
+    if (!path) {
+        fb.textContent = 'Please enter a directory path.';
+        fb.className = 'text-sm rounded p-3 bg-red-900/40 text-red-300';
+        fb.classList.remove('hidden');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Importing...';
+    fb.textContent = 'Validating and copying files to Colossus (original untouched, large folders may take a few minutes)...';
+    fb.className = 'text-sm rounded p-3 bg-blue-900/40 text-blue-300 animate-pulse';
+    fb.classList.remove('hidden');
+
+    try {
+        const resp = await fetch('/api/manager/import', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path, project, name, target_file: target, site}),
+        });
+        const data = await resp.json();
+
+        if (resp.ok) {
+            let msg = `Imported as "${data.name}" (${data.design_count} designs, tools: ${data.tools.join(', ')})`;
+            if (data.copied_to) msg += `\nCopied to: ${data.copied_to}`;
+            fb.textContent = msg;
+            fb.className = 'text-sm rounded p-3 bg-green-900/40 text-green-300 whitespace-pre-line';
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            fb.textContent = data.detail || 'Import failed';
+            fb.className = 'text-sm rounded p-3 bg-red-900/40 text-red-300';
+        }
+    } catch (err) {
+        fb.textContent = 'Error: ' + err.message;
+        fb.className = 'text-sm rounded p-3 bg-red-900/40 text-red-300';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Import';
+    }
+}
+
+// -------- Disk sizes (lazy load) --------
+async function loadSizes() {
+    const cells = document.querySelectorAll('.size-cell');
+    for (const cell of cells) {
+        const path = cell.dataset.path;
+        if (!path || cell.textContent !== '—') continue;
+        // Only load visible rows
+        if (cell.closest('tr').style.display === 'none') continue;
+        try {
+            const resp = await fetch(`/api/manager/disksize?path=${encodeURIComponent(path)}`);
+            if (resp.ok) {
+                const data = await resp.json();
+                cell.textContent = data.size_human;
+            }
+        } catch {}
+    }
+}
+
+// Load sizes for visible rows after a short delay
+// (don't load all at once to avoid hammering the server)
+let sizeLoadTimeout = null;
+function scheduleSizeLoad() {
+    if (sizeLoadTimeout) clearTimeout(sizeLoadTimeout);
+    sizeLoadTimeout = setTimeout(loadSizes, 2000);
+}
+
+// Close modals on Escape
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        closeImportModal();
+        closeDeleteModal();
+    }
+});
+
+// Initial sort by date descending and render first page
+sortCol = 'date'; sortAsc = false;
+applyFilters();
+// Schedule size loading
+scheduleSizeLoad();
+</script>
+{% endblock %}

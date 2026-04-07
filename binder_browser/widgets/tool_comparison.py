@@ -33,9 +33,9 @@ def _style_legend(ax, **kwargs):
 
 METRICS = [
     "combined_score", "boltz_iptm", "boltz_binder_plddt", "esmfold_plddt",
-    "rosetta_dG", "boltz_site_mean_pae", "rosetta_sc",
-    "site_interface_fraction", "refolding_rmsd", "pDockQ",
-    "interface_KE_fraction",
+    "rosetta_dG", "boltz_site_mean_pae", "boltz_mean_interface_pae", "rosetta_sc",
+    "site_interface_fraction", "refolding_rmsd",
+    "interface_KE_fraction", "rosetta_sap", "netsolp_solubility",
     "binder_helix_frac", "binder_sheet_frac",
 ]
 

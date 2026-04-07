@@ -75,7 +75,7 @@ DESIGN MODES
 ═══════════════════════════════════════════════════════════════════════════════
     test:       rfdiffusion=20,   boltzgen=50,    bindcraft=5,   pxdesign=20,   proteina=20    (~1–2 h)
     standard:   rfdiffusion=200,  boltzgen=1000,  bindcraft=10,  pxdesign=200,  proteina=200   (~12–24 h)  [default]
-    production: rfdiffusion=500,  boltzgen=10000, bindcraft=20,  pxdesign=500,  proteina=500   (~2–4 days)
+    production: rfdiffusion=500,  boltzgen=2000,  bindcraft=20,  pxdesign=500,  proteina=500   (~2–4 days)
 
     # Override per-tool count (takes precedence over mode):
     python generate_binders.py ... --mode standard --n_designs boltzgen=10000
@@ -208,20 +208,24 @@ import matplotlib.gridspec as gridspec
 # Paths are configurable via environment variables.
 # Set BINDER_SOFTWARE_DIR and BINDER_WEIGHTS_DIR, or override individual paths.
 
-_SOFTWARE_DIR = os.environ.get("BINDER_SOFTWARE_DIR", os.path.expanduser("~/data/software"))
-_WEIGHTS_DIR  = os.environ.get("BINDER_WEIGHTS_DIR", os.path.expanduser("~/data/weights"))
+from config_loader import cfg
 
-RFDIFFUSION_DIR      = os.environ.get("RFDIFFUSION_DIR",      f"{_SOFTWARE_DIR}/RFdiffusion")
-RFDIFFUSION_CKPT     = os.environ.get("RFDIFFUSION_CKPT",     f"{_WEIGHTS_DIR}/rfdiffusion/Complex_base_ckpt.pt")
-LIGANDMPNN_DIR       = os.environ.get("LIGANDMPNN_DIR",       f"{_SOFTWARE_DIR}/LigandMPNN")
-LIGANDMPNN_CKPT      = os.environ.get("LIGANDMPNN_CKPT",      f"{_WEIGHTS_DIR}/ligandmpnn/proteinmpnn_v_48_020.pt")
-BINDCRAFT_DIR        = os.environ.get("BINDCRAFT_DIR",         f"{_SOFTWARE_DIR}/BindCraft")
-BOLTZGEN_BIN         = os.environ.get("BOLTZGEN_BIN",          f"{_SOFTWARE_DIR}/envs/boltzgen/bin/boltzgen")
-PXDESIGN_DIR         = os.environ.get("PXDESIGN_DIR",          f"{_SOFTWARE_DIR}/PXDesign")
-PROTEINA_DIR         = os.environ.get("PROTEINA_DIR",          f"{_SOFTWARE_DIR}/Proteina")
-PROTEINA_CKPT        = os.environ.get("PROTEINA_CKPT",        f"{_WEIGHTS_DIR}/proteina/proteina_v1.1_DFS_200M_tri.ckpt")
-PROTEINA_COMPLEXA_DIR  = os.environ.get("PROTEINA_COMPLEXA_DIR",  f"{_SOFTWARE_DIR}/Proteina-Complexa")
-PROTEINA_COMPLEXA_VENV = os.environ.get("PROTEINA_COMPLEXA_VENV", f"{_SOFTWARE_DIR}/Proteina-Complexa/.venv")
+_SOFTWARE_DIR = cfg.software_dir
+_WEIGHTS_DIR  = cfg.weights_dir
+
+RFDIFFUSION_DIR      = cfg.tool("rfdiffusion_dir",      "RFDIFFUSION_DIR",      f"{_SOFTWARE_DIR}/RFdiffusion")
+RFDIFFUSION_CKPT     = cfg.tool("rfdiffusion_ckpt",     "RFDIFFUSION_CKPT",     f"{_WEIGHTS_DIR}/rfdiffusion/Complex_base_ckpt.pt")
+LIGANDMPNN_DIR       = cfg.tool("ligandmpnn_dir",       "LIGANDMPNN_DIR",       f"{_SOFTWARE_DIR}/LigandMPNN")
+LIGANDMPNN_CKPT      = cfg.tool("ligandmpnn_ckpt",      "LIGANDMPNN_CKPT",      f"{_WEIGHTS_DIR}/ligandmpnn/proteinmpnn_v_48_020.pt")
+BINDCRAFT_DIR        = cfg.tool("bindcraft_dir",         "BINDCRAFT_DIR",         f"{_SOFTWARE_DIR}/BindCraft")
+BOLTZGEN_BIN         = os.environ.get("BOLTZGEN_BIN",    os.path.join(cfg.conda_env("boltzgen"), "bin", "boltzgen"))
+PXDESIGN_DIR         = cfg.tool("pxdesign_dir",          "PXDESIGN_DIR",          f"{_SOFTWARE_DIR}/PXDesign")
+PROTEINA_DIR         = cfg.tool("proteina_dir",          "PROTEINA_DIR",          f"{_SOFTWARE_DIR}/Proteina")
+PROTEINA_CKPT        = cfg.tool("proteina_ckpt",         "PROTEINA_CKPT",        f"{_WEIGHTS_DIR}/proteina/proteina_v1.1_DFS_200M_tri.ckpt")
+PROTEINA_COMPLEXA_DIR  = cfg.tool("proteina_complexa_dir",  "PROTEINA_COMPLEXA_DIR")
+PROTEINA_COMPLEXA_VENV = cfg.tool("proteina_complexa_venv", "PROTEINA_COMPLEXA_VENV")
+RFD3_ENV             = cfg.conda_env("rfdiffusion3")
+RFD3_WEIGHTS         = cfg.tool("rfd3_weights",          "RFD3_WEIGHTS",         f"{_WEIGHTS_DIR}/foundry")
 
 TOOL_COLORS = {
     "rfdiffusion":        "#E53935",
@@ -230,13 +234,14 @@ TOOL_COLORS = {
     "pxdesign":           "#FF9800",
     "proteina":           "#76FF03",
     "proteina_complexa":  "#AB47BC",
+    "rfdiffusion3":       "#00BCD4",
 }
 ALL_TOOLS = list(TOOL_COLORS)
 
 # Tools that produce their own iPTM scores natively (no Boltz-2 re-prediction needed)
 IPTM_NATIVE_TOOLS = {"bindcraft", "boltzgen", "pxdesign", "proteina_complexa"}
 # Backbone-only generators that need Boltz-2 for iPTM scoring
-BACKBONE_ONLY_TOOLS = {"rfdiffusion", "proteina"}
+BACKBONE_ONLY_TOOLS = {"rfdiffusion", "proteina", "rfdiffusion3"}
 
 # ── Secondary structure bias parameters ───────────────────────────────────────
 SS_BIAS_PARAMS = {
@@ -261,9 +266,13 @@ SS_BIAS_PARAMS = {
 # n_designs per tool for each mode. BoltzGen needs many more because most raw
 # designs are filtered internally before reaching final_ranked_designs.
 DESIGN_MODES = {
-    "test":       {"rfdiffusion":  20, "boltzgen":    50, "bindcraft":   5, "pxdesign":   20, "proteina":   20, "proteina_complexa":   20},
-    "standard":   {"rfdiffusion": 200, "boltzgen":   500, "bindcraft":  10, "pxdesign":  200, "proteina":  200, "proteina_complexa":  200},
-    "production": {"rfdiffusion": 500, "boltzgen": 10000, "bindcraft":  20, "pxdesign":  500, "proteina":  500, "proteina_complexa":  500},
+    "test":       {"rfdiffusion":  20, "rfdiffusion3":  20, "boltzgen":    50, "bindcraft":   5, "pxdesign":   20, "proteina":   20, "proteina_complexa":   20},
+    "standard":   {"rfdiffusion": 200, "rfdiffusion3": 100, "boltzgen":   500, "bindcraft":  10, "pxdesign":  200, "proteina":  200, "proteina_complexa":  200},
+    "production": {"rfdiffusion": 500, "rfdiffusion3": 250, "boltzgen":  2000, "bindcraft":  20, "pxdesign":  500, "proteina":  500, "proteina_complexa":  500},
+}
+# Reduced BindCraft counts when filters are active (strict filters = slow per design)
+BINDCRAFT_FILTERED_COUNTS = {
+    "test": 2, "standard": 4, "production": 10,
 }
 DEFAULT_MODE = "standard"
 
@@ -286,17 +295,235 @@ def log(msg):
 # GPU pinning env — set by --device flag, merged into every run_cmd call
 GPU_ENV = {}
 
-def run_cmd(cmd, timeout=86400, extra_env=None, cwd=None, dry_run=False):
-    """Run a command. On dry_run, print without executing. Raises RuntimeError on failure."""
+class SkipRequested(Exception):
+    """Raised when user requests skipping the current tool via signal file."""
+    pass
+
+
+def _collect_partial_output(tool, tool_dir):
+    """Collect whatever designs exist in a tool's output directory after skip/crash.
+
+    Returns a list of design dicts with at minimum design_id + binder_sequence.
+    """
+    from pathlib import Path
+    tool_dir = Path(tool_dir)
+    designs = []
+
+    if tool in ("rfdiffusion", "proteina"):
+        # Backbone tools: collect sequences from LigandMPNN output
+        seq_dir = tool_dir / "sequences" / "seqs"
+        if not seq_dir.exists():
+            seq_dir = tool_dir / "sequences"
+        for fa in sorted(tool_dir.rglob("*.fa")):
+            try:
+                lines = fa.read_text().strip().splitlines()
+                for i in range(0, len(lines), 2):
+                    if lines[i].startswith(">"):
+                        seq = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                        if seq:
+                            did = f"{tool}_{len(designs):04d}"
+                            designs.append({"design_id": did, "binder_sequence": seq})
+                            break  # one seq per file (best by confidence)
+            except Exception:
+                continue
+
+    elif tool == "boltzgen":
+        # BoltzGen: collect CIFs from final or intermediate directories
+        import gemmi
+        for subdir_name in ("final_ranked_designs", "final_50_designs",
+                            "intermediate_designs_inverse_folded"):
+            cif_dir = tool_dir / "boltzgen_raw" / subdir_name
+            if not cif_dir.exists():
+                continue
+            for cif in sorted(cif_dir.rglob("*.cif")):
+                try:
+                    doc = gemmi.cif.read(str(cif))
+                    st = gemmi.make_structure_from_block(doc.sole_block())
+                    chains = list(st[0])
+                    if len(chains) < 2:
+                        continue
+                    binder = min(chains, key=lambda c: sum(1 for _ in c))
+                    seq = "".join(r.name[-1] if len(r.name) == 1 else
+                                 gemmi.find_tabulated_residue(r.name).one_letter_code
+                                 for r in binder if r.find_atom("CA", "\0"))
+                    if seq and len(seq) > 5:
+                        did = f"boltzgen_{len(designs):04d}"
+                        designs.append({"design_id": did, "binder_sequence": seq})
+                except Exception:
+                    continue
+            if designs:
+                break
+
+    elif tool == "bindcraft":
+        # BindCraft: collect from Accepted/Ranked/ or final_design_stats.csv
+        csv_path = tool_dir / "bindcraft_output" / "final_design_stats.csv"
+        if csv_path.exists():
+            import csv as _csv
+            with open(csv_path) as f:
+                reader = _csv.DictReader(f)
+                for row in reader:
+                    seq = row.get("Sequence", "")
+                    name = row.get("Design", "")
+                    if seq:
+                        did = f"bindcraft_{len(designs):04d}"
+                        designs.append({"design_id": did, "binder_sequence": seq})
+
+    elif tool == "pxdesign":
+        # PXDesign: collect from summary.csv
+        import csv as _csv
+        for summary in tool_dir.rglob("summary.csv"):
+            with open(summary) as f:
+                reader = _csv.DictReader(f)
+                for row in reader:
+                    seq = row.get("sequence", "")
+                    if seq:
+                        did = f"pxdesign_{len(designs):04d}"
+                        designs.append({"design_id": did, "binder_sequence": seq})
+            break
+
+    elif tool == "proteina_complexa":
+        # Proteina Complexa: collect from inference PDBs
+        import gemmi
+        inference_base = Path(PROTEINA_COMPLEXA_DIR) / "inference"
+        run_name = f"{tool_dir.parent.name}_{tool_dir.name}"
+        for rd in sorted(inference_base.glob(f"*{run_name}*")):
+            for pdb in sorted(rd.rglob("*.pdb")):
+                if "_binder" in pdb.stem:
+                    continue
+                try:
+                    st = gemmi.read_structure(str(pdb))
+                    chains = list(st[0])
+                    binder = min(chains, key=lambda c: sum(1 for _ in c))
+                    seq = "".join(
+                        gemmi.find_tabulated_residue(r.name).one_letter_code
+                        for r in binder if r.find_atom("CA", "\0"))
+                    if seq and len(seq) > 5:
+                        did = f"proteina_complexa_{len(designs):04d}"
+                        designs.append({"design_id": did, "binder_sequence": seq})
+                except Exception:
+                    continue
+
+    elif tool == "rfdiffusion3":
+        import gzip
+        import gemmi
+        rfd3_out = tool_dir / "rfd3_output"
+        if rfd3_out.exists():
+            for cif_gz in sorted(rfd3_out.glob("*.cif.gz")):
+                try:
+                    with gzip.open(str(cif_gz), "rt") as f:
+                        doc = gemmi.cif.read_string(f.read())
+                    st = gemmi.make_structure_from_block(doc.sole_block())
+                    chains = list(st[0])
+                    if len(chains) < 2:
+                        continue
+                    binder = min(chains, key=lambda c: sum(1 for _ in c))
+                    seq = "".join(
+                        gemmi.find_tabulated_residue(r.name).one_letter_code
+                        for r in binder if r.find_atom("CA", "\0"))
+                    if seq and len(seq) > 5:
+                        did = f"rfdiffusion3_{len(designs):04d}"
+                        designs.append({"design_id": did, "binder_sequence": seq})
+                except Exception:
+                    continue
+
+    log(f"  _collect_partial_output({tool}): found {len(designs)} designs")
+    return designs
+
+
+def run_cmd(cmd, timeout=86400, extra_env=None, cwd=None, dry_run=False,
+            progress_dir=None, progress_pattern=None, progress_total=None,
+            progress_label=None, skip_file=None):
+    """Run a command with optional file-based progress monitoring and skip support.
+
+    When progress_dir/pattern/total are given, a background thread polls
+    the output directory and logs progress every 15 seconds.
+
+    When skip_file is given, the polling thread also checks for a skip signal
+    file. If found, the subprocess is terminated and SkipRequested is raised.
+
+    Raises RuntimeError on failure, SkipRequested on user skip.
+    """
     if dry_run:
         print(f"  [DRY RUN] {' '.join(str(c) for c in cmd)}")
         return "", ""
     env = {**os.environ, **GPU_ENV, **(extra_env or {})}
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                       env=env, cwd=cwd)
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr[-3000:] or r.stdout[-3000:])
-    return r.stdout, r.stderr
+
+    if not (progress_dir and progress_pattern and progress_total):
+        # Simple mode: no progress tracking or skip support
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           env=env, cwd=cwd)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr[-3000:] or r.stdout[-3000:])
+        return r.stdout, r.stderr
+
+    # Progress mode: use Popen + polling thread
+    import threading
+    import signal as _signal
+    from pathlib import Path
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env, cwd=cwd,
+                            start_new_session=True)  # new session for killpg
+    stop_event = threading.Event()
+    skipped = threading.Event()
+    label = progress_label or "progress"
+    pdir = Path(progress_dir)
+    skip_path = Path(skip_file) if skip_file else None
+
+    def _poll():
+        last_count = -1
+        while not stop_event.is_set():
+            # Check skip signal
+            if skip_path and skip_path.exists():
+                try:
+                    skip_path.unlink()  # consume signal
+                except OSError:
+                    pass
+                log(f"  [SKIP] User requested skip of {label}")
+                skipped.set()
+                # Kill process group
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
+                except (OSError, ProcessLookupError):
+                    pass
+                # Escalate after 5s
+                stop_event.wait(5)
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                return
+
+            # Count progress
+            try:
+                count = len(list(pdir.glob(progress_pattern)))
+            except Exception:
+                count = 0
+            if count != last_count:
+                log(f"  [PROGRESS:{label}] {count}/{progress_total}")
+                last_count = count
+            stop_event.wait(15)
+
+    poll_thread = threading.Thread(target=_poll, daemon=True)
+    poll_thread.start()
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        stop_event.set()
+        raise RuntimeError(f"Timed out after {timeout}s")
+    finally:
+        stop_event.set()
+        poll_thread.join(timeout=8)
+
+    if skipped.is_set():
+        raise SkipRequested(f"{label} skipped by user")
+
+    if proc.returncode != 0:
+        raise RuntimeError(stderr[-3000:] or stdout[-3000:])
+    return stdout, stderr
 
 
 def _cleanup_gpu(gpu_id=None):
@@ -737,7 +964,7 @@ def run_rfdiffusion(target_path, chain_id, site_resnums, length_min, length_max,
         f"hotspots=[{hotspots}], binder {length_min}–{length_max} aa, n={n_designs}")
 
     rf_cmd = [
-        "conda", "run", "--no-capture-output", "-n", "rfdiffusion",
+        "conda", "run", "--no-capture-output", *cfg.conda_run_args("rfdiffusion"),
         "python", f"{RFDIFFUSION_DIR}/scripts/run_inference.py",
         f"inference.input_pdb={Path(target_path).resolve()}",
         f"contigmap.contigs={contig}",
@@ -750,7 +977,10 @@ def run_rfdiffusion(target_path, chain_id, site_resnums, length_min, length_max,
         "denoiser.noise_scale_frame=0.5",
     ]
     log("RFdiffusion: generating backbones...")
-    run_cmd(rf_cmd, timeout=None, dry_run=dry_run)
+    run_cmd(rf_cmd, timeout=None, dry_run=dry_run,
+            progress_dir=str(bb_dir), progress_pattern="design_*.pdb",
+            progress_total=n_designs, progress_label="rfdiffusion",
+            skip_file=str(Path(out_dir).parent / ".skip_rfdiffusion"))
 
     backbones = sorted(bb_dir.glob("design_*.pdb"))
     if not backbones and not dry_run:
@@ -761,7 +991,7 @@ def run_rfdiffusion(target_path, chain_id, site_resnums, length_min, length_max,
     multi_json.write_text(json.dumps({str(p): "" for p in backbones}))
 
     mpnn_cmd = [
-        "conda", "run", "--no-capture-output", "-n", "mpnn",
+        "conda", "run", "--no-capture-output", *cfg.conda_run_args("mpnn"),
         "python", f"{LIGANDMPNN_DIR}/run.py",
         "--model_type",              "protein_mpnn",
         "--checkpoint_protein_mpnn", LIGANDMPNN_CKPT,
@@ -944,7 +1174,10 @@ def run_boltzgen(target_path, chain_id, site_resnums, length_min, length_max,
         cmd.extend(["--additional_filters", "sheet<0.2"])
     log(f"BoltzGen: running {n_designs} designs (may take hours)...")
     run_cmd(cmd, timeout=None, dry_run=dry_run,
-            extra_env={"MKL_THREADING_LAYER": "GNU", "PYTHONNOUSERSITE": "1"})
+            extra_env={"MKL_THREADING_LAYER": "GNU", "PYTHONNOUSERSITE": "1"},
+            progress_dir=str(raw_dir), progress_pattern="intermediate_designs/*.cif",
+            progress_total=n_designs, progress_label="boltzgen",
+            skip_file=str(Path(out_dir).parent / ".skip_boltzgen"))
 
     designs = []
     if not dry_run:
@@ -1127,15 +1360,26 @@ def run_bindcraft(target_path, chain_id, site_resnums, length_min, length_max,
         effective_advanced = str(patched)
         log(f"BindCraft: patched weights_helicity={SS_BIAS_PARAMS[ss_bias]['bc_helicity']} → {patched}")
 
+    effective_filters = filters_path or f"{BINDCRAFT_DIR}/settings_filters/no_filters.json"
+    # Validate filter path — fall back to no_filters if invalid
+    if not Path(effective_filters).is_file():
+        log(f"  WARNING: filter file '{effective_filters}' not found, using no_filters")
+        effective_filters = f"{BINDCRAFT_DIR}/settings_filters/no_filters.json"
+    filter_name = Path(effective_filters).stem
+    log(f"BindCraft: filters = {filter_name} ({effective_filters})")
     cmd = [
-        "conda", "run", "--no-capture-output", "-n", "BindCraft",
+        "conda", "run", "--no-capture-output", *cfg.conda_run_args("bindcraft"),
         "python", f"{BINDCRAFT_DIR}/bindcraft.py",
         "--settings", str(settings_path),
-        "--filters",  filters_path or f"{BINDCRAFT_DIR}/settings_filters/no_filters.json",
+        "--filters",  effective_filters,
         "--advanced", str(effective_advanced),
     ]
     log(f"BindCraft: running until {n_designs} designs accepted...")
-    run_cmd(cmd, timeout=None, cwd=BINDCRAFT_DIR, dry_run=dry_run)
+    run_cmd(cmd, timeout=None, cwd=BINDCRAFT_DIR, dry_run=dry_run,
+            progress_dir=str(design_path / "Accepted"),
+            progress_pattern="**/*.pdb",
+            progress_total=n_designs, progress_label="bindcraft",
+            skip_file=str(Path(out_dir).parent / ".skip_bindcraft"))
 
     designs = []
     if not dry_run:
@@ -1414,7 +1658,7 @@ def run_pxdesign(target_path, chain_id, site_resnums, length_min, length_max,
     preset = "preview" if n_designs <= 30 else "extended"
 
     cmd = [
-        "conda", "run", "--no-capture-output", "-n", "pxdesign",
+        "conda", "run", "--no-capture-output", *cfg.conda_run_args("pxdesign"),
         "pxdesign", "pipeline",
         "--preset", preset,
         "-i", str(yaml_path),
@@ -1427,7 +1671,11 @@ def run_pxdesign(target_path, chain_id, site_resnums, length_min, length_max,
         "LAYERNORM_TYPE": "torch",  # Protenix: use PyTorch LayerNorm (avoid CUDA JIT)
         "PYTHONNOUSERSITE": "1",    # isolate from ~/.local/ packages
     }
-    run_cmd(cmd, timeout=86400, extra_env=px_env, dry_run=dry_run)
+    run_cmd(cmd, timeout=86400, extra_env=px_env, dry_run=dry_run,
+            progress_dir=str(out_dir / "pxdesign_output"),
+            progress_pattern="**/*.cif",
+            progress_total=n_designs, progress_label="pxdesign",
+            skip_file=str(Path(out_dir).parent / ".skip_pxdesign"))
 
     designs = []
     if not dry_run:
@@ -1596,7 +1844,7 @@ def run_proteina(target_path, chain_id, site_resnums, length_min, length_max,
 
     # Proteina generate_backbones.py — our thin wrapper around Proteina's API
     # Generates unconditional backbone PDBs of specified lengths
-    proteina_python = os.environ.get("PROTEINA_PYTHON", f"{_SOFTWARE_DIR}/envs/proteina_env/bin/python")
+    proteina_python = os.environ.get("PROTEINA_PYTHON", os.path.join(cfg.conda_env("proteina"), "bin", "python"))
     proteina_cmd = [
         proteina_python, f"{PROTEINA_DIR}/generate_backbones.py",
         "--ckpt", PROTEINA_CKPT,
@@ -1614,7 +1862,10 @@ def run_proteina(target_path, chain_id, site_resnums, length_min, length_max,
         "PYTHONNOUSERSITE": "1",  # isolate from ~/.local/ packages
     }
     log("Proteina: generating backbones...")
-    run_cmd(proteina_cmd, timeout=None, extra_env=proteina_env, dry_run=dry_run)
+    run_cmd(proteina_cmd, timeout=None, extra_env=proteina_env, dry_run=dry_run,
+            progress_dir=str(bb_dir), progress_pattern="design_*.pdb",
+            progress_total=n_designs, progress_label="proteina",
+            skip_file=str(Path(out_dir).parent / ".skip_proteina"))
 
     backbones = sorted(bb_dir.glob("design_*.pdb"))
     if not backbones and not dry_run:
@@ -1625,7 +1876,7 @@ def run_proteina(target_path, chain_id, site_resnums, length_min, length_max,
     proteina_mpnn_script = f"{PROTEINA_DIR}/ProteinMPNN/protein_mpnn_run.py"
     for bb_pdb in backbones:
         mpnn_cmd = [
-            "conda", "run", "--no-capture-output", "-n", "mpnn",
+            "conda", "run", "--no-capture-output", *cfg.conda_run_args("mpnn"),
             "python", proteina_mpnn_script,
             "--ca_only",
             "--pdb_path",          str(bb_pdb),
@@ -1835,7 +2086,7 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
         f"++generation.dataloader.dataset.nres.nsamples={nsamples}",
         f"++generation.dataloader.dataset.nres.low={length_min}",
         f"++generation.dataloader.dataset.nres.high={length_max}",
-        f"++generation.dataloader.batch_size=8",
+        f"++generation.dataloader.batch_size=4",
         f"++generation.search.algorithm=best-of-n",
         f"++generation.search.best_of_n.replicas=2",
         f"++gen_njobs=1",
@@ -1864,8 +2115,14 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
         "USE_V2_COMPLEXA_ARCH": "False",
     }
 
+    # Progress: Complexa writes PDBs to inference/ directory
+    run_name = f"{out_dir.parent.name}_{out_dir.name}"
+    pc_inference_dir = str(Path(PROTEINA_COMPLEXA_DIR) / "inference")
     try:
-        run_cmd(cmd, timeout=None, cwd=PROTEINA_COMPLEXA_DIR, extra_env=extra_env, dry_run=dry_run)
+        run_cmd(cmd, timeout=None, cwd=PROTEINA_COMPLEXA_DIR, extra_env=extra_env, dry_run=dry_run,
+                progress_dir=pc_inference_dir, progress_pattern=f"*{run_name}*/job_*/*.pdb",
+                progress_total=n_designs, progress_label="proteina_complexa",
+                skip_file=str(Path(out_dir).parent / ".skip_proteina_complexa"))
     except RuntimeError as e:
         # Complexa may fail on filter/evaluate but still produce PDBs from generate.
         # Try to collect whatever was generated.
@@ -2050,6 +2307,155 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
                        or d.get("binder_sheet_frac") is None]
             log(f"  Proteina Complexa SS filter (helix): kept {len(designs)}/{n_before} "
                 f"with sheet <= {params['pc_max_sheet']}")
+
+    return designs
+
+
+def run_rfdiffusion3(target_path, chain_id, site_resnums, length_min, length_max,
+                     n_designs, out_dir, dry_run=False, **kwargs):
+    """
+    RFdiffusion3 (Foundry) all-atom binder design.
+
+    Generates full-atom binder structures with predicted sequences via the
+    rfd3 diffusion model.  No separate inverse folding step is needed.
+
+    Each input task produces diffusion_batch_size (4) models with different
+    seeds, providing structural diversity.  n_designs=20 → 80 candidates.
+
+    Returns list of design dicts with design_id, binder_sequence, backbone_pdb.
+    """
+    import gzip
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_subdir = out_dir / "rfd3_output"
+    output_subdir.mkdir(parents=True, exist_ok=True)
+
+    # RFD3 uses original PDB residue numbering in contig and hotspots.
+    # Contig format for binder design: "{binder_len},/0,{chain}{first}-{last}"
+    #   - First segment: new binder chain (diffused)
+    #   - /0: chain break
+    #   - Second segment: fixed target chain (original PDB numbering)
+    chain_info = get_chain_info(target_path)
+    tchain = chain_info.get(chain_id)
+    if not tchain:
+        raise ValueError(f"Chain {chain_id} not found in {target_path}")
+
+    chain_len = tchain["length"]
+    residues = tchain.get("residues", [])
+    first_resnum = residues[0] if residues else 1
+    last_resnum = residues[-1] if residues else chain_len
+
+    # Hotspots use original PDB residue numbers (not 1-based indices)
+    hotspot_str = ",".join(f"{chain_id}{r}" for r in site_resnums)
+
+    # Contig: binder (variable length), chain break, fixed target
+    contig = f"{length_min}-{length_max},/0,{chain_id}{first_resnum}-{last_resnum}"
+    # Total length = binder + target
+    total_len_min = length_min + chain_len
+    total_len_max = length_max + chain_len
+
+    # Build input JSON — one task per design for progress tracking
+    input_json = {}
+    for i in range(n_designs):
+        input_json[f"design_{i:04d}"] = {
+            "input": str(Path(target_path).resolve()),
+            "contig": contig,
+            "length": f"{total_len_min}-{total_len_max}",
+            "select_hotspots": hotspot_str,
+            "plddt_enhanced": True,
+            "infer_ori_strategy": "hotspots",
+            "redesign_motif_sidechains": False,
+        }
+
+    json_path = out_dir / "rfd3_input.json"
+    with open(json_path, "w") as f:
+        json.dump(input_json, f, indent=2)
+    log(f"RFdiffusion3: input JSON written → {json_path}")
+
+    cmd = [
+        "conda", "run", "--no-capture-output", "-p", RFD3_ENV,
+        "rfd3", "design",
+        f"inputs={json_path}",
+        f"out_dir={output_subdir}",
+        "diffusion_batch_size=4",
+        "inference_sampler.num_timesteps=200",
+        "inference_sampler.step_scale=1.5",
+    ]
+    rfd3_env = {
+        "PYTHONNOUSERSITE": "1",
+        "FOUNDRY_CHECKPOINT_DIRS": RFD3_WEIGHTS,
+    }
+    # Each input task produces diffusion_batch_size models (4 diverse seeds)
+    rfd3_batch_size = 4
+    n_total_models = n_designs * rfd3_batch_size
+    log(f"RFdiffusion3: generating {n_designs} designs × {rfd3_batch_size} models = {n_total_models} candidates...")
+    run_cmd(cmd, timeout=None, dry_run=dry_run, extra_env=rfd3_env,
+            progress_dir=str(output_subdir), progress_pattern="*.cif.gz",
+            progress_total=n_total_models, progress_label="rfdiffusion3",
+            skip_file=str(Path(out_dir).parent / ".skip_rfdiffusion3"))
+
+    designs = []
+    if not dry_run:
+        import gemmi
+
+        for cif_gz in sorted(output_subdir.glob("*.cif.gz")):
+            try:
+                with gzip.open(str(cif_gz), "rt") as f:
+                    doc = gemmi.cif.read_string(f.read())
+                st = gemmi.make_structure_from_block(doc.sole_block())
+                model = st[0]
+                chains = list(model)
+
+                # RFD3 may output binder+target as separate chains or in one chain.
+                # Use the metadata JSON to identify the binder region via diffused_index_map.
+                meta_path = str(cif_gz).replace(".cif.gz", ".json")
+                binder_seq = None
+
+                if len(chains) >= 2:
+                    # Multi-chain: binder is the shorter chain
+                    chain_sizes = [(ch, sum(1 for r in ch if r.find_atom("CA", "\0"))) for ch in chains]
+                    chain_sizes.sort(key=lambda x: x[1])
+                    binder_ch = chain_sizes[0][0]
+                    binder_seq = "".join(
+                        gemmi.find_tabulated_residue(r.name).one_letter_code
+                        for r in binder_ch if r.find_atom("CA", "\0")
+                        and gemmi.find_tabulated_residue(r.name).one_letter_code != "?")
+                elif len(chains) == 1 and Path(meta_path).exists():
+                    # Single chain: use diffused_index_map to find which residues
+                    # are the fixed target (mapped from original PDB) vs designed binder
+                    with open(meta_path) as mf:
+                        meta = json.load(mf)
+                    mapped_resnums = set()
+                    for orig, new in meta.get("diffused_index_map", {}).items():
+                        # Parse "A5" → 5
+                        m = re.match(r"[A-Za-z](\d+)", new)
+                        if m:
+                            mapped_resnums.add(int(m.group(1)))
+                    # Binder residues are those NOT in the diffused_index_map
+                    ch = chains[0]
+                    binder_residues = []
+                    for r in ch:
+                        if r.find_atom("CA", "\0") and r.seqid.num not in mapped_resnums:
+                            code = gemmi.find_tabulated_residue(r.name).one_letter_code
+                            if code and code != "?":
+                                binder_residues.append(code)
+                    binder_seq = "".join(binder_residues)
+
+                if not binder_seq or len(binder_seq) < 5:
+                    continue
+
+                design_id = f"rfdiffusion3_{len(designs):04d}"
+                designs.append({
+                    "design_id": design_id,
+                    "binder_sequence": binder_seq,
+                    "backbone_pdb": str(cif_gz),
+                })
+            except Exception as e:
+                log(f"  RFdiffusion3: failed to parse {cif_gz.name}: {e}")
+                continue
+
+        log(f"RFdiffusion3: {len(designs)} designs collected")
 
     return designs
 
@@ -2514,10 +2920,14 @@ def validate_esmfold(designs, val_dir, plddt_threshold=70.0, dry_run=False):
     val_dir = Path(val_dir) / "esmfold"
     val_dir.mkdir(parents=True, exist_ok=True)
 
-    log(f"ESMFold validation: {len(designs)} designs, pLDDT threshold={plddt_threshold}")
+    n_total = len(designs)
+    log(f"ESMFold validation: {n_total} designs, pLDDT threshold={plddt_threshold}")
     passing = []
 
-    for d in designs:
+    for i, d in enumerate(designs):
+        if i > 0 and i % 20 == 0:
+            log(f"  [PROGRESS:esmfold] {i}/{n_total} ({len(passing)} passed)")
+
         seq       = d["binder_sequence"]
         design_id = d["design_id"]
         pdb_path  = val_dir / f"{design_id}.pdb"
@@ -2551,7 +2961,7 @@ def validate_esmfold(designs, val_dir, plddt_threshold=70.0, dry_run=False):
 
         try:
             stdout, _ = run_cmd(
-                ["conda", "run", "--no-capture-output", "-n", "esmfold",
+                ["conda", "run", "--no-capture-output", *cfg.conda_run_args("esmfold"),
                  "python", "-c", script],
                 timeout=300)
             m = re.search(r"PLDDT:([0-9.]+)", stdout)
@@ -2709,7 +3119,7 @@ def validate_boltz(designs, target_chain_seq, val_dir,
                     f"      sequence: {target_chain_seq}\n"
                 )
                 msa_cmd = [
-                    "conda", "run", "--no-capture-output", "-n", "boltz",
+                    "conda", "run", "--no-capture-output", *cfg.conda_run_args("boltz"),
                     "boltz", "predict", str(msa_yaml),
                     "--out_dir", str(val_dir / "target_msa_run"),
                     "--use_msa_server",
@@ -2801,7 +3211,7 @@ def validate_boltz(designs, target_chain_seq, val_dir,
             log(f"  Boltz batch: predicting {len(needs_prediction)} designs "
                 f"on {actual_devices} GPU(s)...")
             cmd = [
-                "conda", "run", "--no-capture-output", "-n", "boltz",
+                "conda", "run", "--no-capture-output", *cfg.conda_run_args("boltz"),
                 "boltz", "predict", str(batch_yaml_dir),
                 "--out_dir",            str(val_dir),
                 "--use_msa_server",
@@ -2834,7 +3244,7 @@ def validate_boltz(designs, target_chain_seq, val_dir,
                     fallback_dir = val_dir / design_id
                     fallback_dir.mkdir(exist_ok=True)
                     fb_cmd = [
-                        "conda", "run", "--no-capture-output", "-n", "boltz",
+                        "conda", "run", "--no-capture-output", *cfg.conda_run_args("boltz"),
                         "boltz", "predict", str(yaml_path),
                         "--out_dir",            str(fallback_dir),
                         "--use_msa_server",
@@ -3451,8 +3861,7 @@ def compute_refolding_rmsd(designs, dry_run=False):
 # ── Solubility prediction (NetSolP) ──────────────────────────────────────────
 
 _NETSOLP_DIR = os.environ.get("NETSOLP_DIR",
-    os.path.join(os.environ.get("BINDER_SOFTWARE_DIR", os.path.expanduser("~/data/software")),
-                 "NetSolP-1.0", "PredictionServer"))
+    os.path.join(_SOFTWARE_DIR, "NetSolP-1.0", "PredictionServer"))
 
 
 def compute_solubility(designs, dry_run=False):
@@ -3500,7 +3909,7 @@ def compute_solubility(designs, dry_run=False):
 
         # Run NetSolP in esmfold env
         cmd = [
-            "conda", "run", "--no-capture-output", "-n", "esmfold",
+            "conda", "run", "--no-capture-output", *cfg.conda_run_args("esmfold"),
             "python", predict_script,
             "--FASTA_PATH", fasta_path,
             "--OUTPUT_PATH", out_csv,
@@ -3791,7 +4200,7 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
         return designs
 
     try:
-        run_cmd(["conda", "run", "--no-capture-output", "-n", "BindCraft",
+        run_cmd(["conda", "run", "--no-capture-output", *cfg.conda_run_args("bindcraft"),
                  "python", str(score_script)],
                 timeout=max(7200, len(to_score) * 180))  # ~3 min/design, min 2h
     except RuntimeError as e:
@@ -4083,7 +4492,7 @@ def rank_designs(all_designs, score_weights=(0.4, 0.5, 0.1),
 
     # Geometric site proximity filter: exclude designs that explicitly failed
     # (site_geometric_pass=False) OR that were never checked (no Boltz CIF)
-    # when min_site_fraction > 0.
+    # when they should have one.
     before = len(validated)
     passed_geo = []
     for d in validated:
@@ -4091,10 +4500,15 @@ def rank_designs(all_designs, score_weights=(0.4, 0.5, 0.1),
             d["combined_score"] = float("nan")
             unvalidated.append(d)
         elif d.get("boltz_iptm") != d.get("boltz_iptm"):
-            # No Boltz-2 prediction → no complex structure → cannot verify
-            # site contact. Exclude from ranking.
-            d["combined_score"] = float("nan")
-            unvalidated.append(d)
+            # No Boltz-2 prediction → no complex structure → cannot verify site contact.
+            # But native-iPTM tools (BindCraft, BoltzGen, PXDesign, Proteina Complexa)
+            # may legitimately skip Boltz-2 when reprediction is off — keep them ranked.
+            tool_prefix = _get_tool_from_design_id(d.get("design_id", ""))
+            if not reprediction and tool_prefix in IPTM_NATIVE_TOOLS:
+                passed_geo.append(d)  # trust native validation
+            else:
+                d["combined_score"] = float("nan")
+                unvalidated.append(d)
         else:
             passed_geo.append(d)
     n_filtered = before - len(passed_geo)
@@ -4927,8 +5341,16 @@ def run_plip_analysis(designs, out_dir, target_path, target_residues=None,
 
         # Run PLIP
         try:
+            # Find plip binary: PATH first, then next to current Python
+            plip_bin = shutil.which("plip")
+            if not plip_bin:
+                candidate = Path(sys.executable).parent / "plip"
+                if candidate.exists():
+                    plip_bin = str(candidate)
+            if not plip_bin:
+                raise FileNotFoundError("plip")
             result = subprocess.run(
-                ["plip", "-f", str(pdb_path), "-o", str(design_plip_dir),
+                [plip_bin, "-f", str(pdb_path), "-o", str(design_plip_dir),
                  "--peptides", "B", "-txy"],
                 capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
@@ -5230,11 +5652,13 @@ def main():
                         help="Number of GPUs for Boltz-2 batch validation (default: 1). "
                              "Only free GPUs (<500 MB used) are used. Safe with other users.")
     parser.add_argument("--bindcraft_filters",
-                        default=f"{BINDCRAFT_DIR}/settings_filters/no_filters.json",
-                        help="BindCraft filters JSON (default: no_filters.json — "
-                             "accept all designs, let Boltz validation rank them. "
-                             "Use relaxed_filters.json or default_filters.json for "
-                             "stricter quality gates).")
+                        default="no_filters",
+                        help="BindCraft filter preset name or full path to JSON. "
+                             "Presets: no_filters (default), relaxed, default, "
+                             "kras_relaxed, peptide, peptide_relaxed. "
+                             "no_filters = accept all, let pipeline rank. "
+                             "relaxed = light quality gate. "
+                             "default = strict (may stall on difficult targets).")
     parser.add_argument("--bindcraft_advanced",
                         default=f"{BINDCRAFT_DIR}/settings_advanced/default_4stage_multimer_flexible.json",
                         help="BindCraft advanced settings JSON (default: "
@@ -5259,6 +5683,27 @@ def main():
                         help="Secondary structure bias: beta (more sheets), "
                              "helix (more helices), balanced (default, no bias)")
     args = parser.parse_args()
+
+    # ── Resolve BindCraft filter preset to full path ─────────────────────
+    BINDCRAFT_FILTER_PRESETS = {
+        "no_filters": "no_filters.json",
+        "relaxed": "relaxed_filters.json",
+        "default": "default_filters.json",
+        "kras_relaxed": "kras_relaxed_filters.json",
+        "peptide": "peptide_filters.json",
+        "peptide_relaxed": "peptide_relaxed_filters.json",
+    }
+    if not args.bindcraft_filters:
+        args.bindcraft_filters = "no_filters"
+    bindcraft_filters_preset = args.bindcraft_filters  # keep preset name for run_params.txt
+    if not os.path.isfile(args.bindcraft_filters):
+        preset_file = BINDCRAFT_FILTER_PRESETS.get(args.bindcraft_filters)
+        if preset_file:
+            args.bindcraft_filters = str(Path(BINDCRAFT_DIR) / "settings_filters" / preset_file)
+        else:
+            log(f"WARNING: BindCraft filter preset '{args.bindcraft_filters}' not found, using no_filters")
+            args.bindcraft_filters = str(Path(BINDCRAFT_DIR) / "settings_filters" / "no_filters.json")
+            bindcraft_filters_preset = "no_filters"
 
     # ── GPU pinning ──────────────────────────────────────────────────────
     global GPU_ENV
@@ -5303,6 +5748,13 @@ def main():
 
     # Start from mode presets, then apply any --n_designs overrides
     n_designs = dict(DESIGN_MODES[args.mode])
+    # Reduce BindCraft count when filters are active (strict filters = slow)
+    bc_filters_active = (hasattr(args, 'bindcraft_filters') and
+                         args.bindcraft_filters and
+                         not args.bindcraft_filters.endswith("no_filters.json") and
+                         args.bindcraft_filters != "no_filters")
+    if bc_filters_active and "bindcraft" in n_designs:
+        n_designs["bindcraft"] = BINDCRAFT_FILTERED_COUNTS.get(args.mode, n_designs["bindcraft"])
     if args.n_designs:
         overrides = parse_n_designs(args.n_designs)
         n_designs.update(overrides)
@@ -5332,6 +5784,44 @@ def main():
         log("*** DRY RUN — no commands will be executed ***")
     log("=" * 62)
 
+    # ── Save run parameters to file for reproducibility ──────────────────
+    params_file = out_dir / "run_params.txt"
+    cmd_parts = ["python generate_binders.py"]
+    cmd_parts.append(f"--target {target_path}")
+    cmd_parts.append(f'--site "{chain_id}:{",".join(str(r) for r in site_resnums)}"')
+    cmd_parts.append(f"--length {length_min}-{length_max}")
+    cmd_parts.append(f"--tools {','.join(tools)}")
+    cmd_parts.append(f"--mode {args.mode}")
+    if args.device:
+        cmd_parts.append(f"--device {args.device}")
+    cmd_parts.append(f"--score_weights {','.join(str(w) for w in score_weights)}")
+    cmd_parts.append(f"--ss_bias {args.ss_bias}")
+    if args.reprediction:
+        cmd_parts.append("--reprediction")
+    if args.plip_top:
+        cmd_parts.append(f"--plip_top {args.plip_top}")
+    if args.top_n != 50:
+        cmd_parts.append(f"--top_n {args.top_n}")
+    if args.max_site_dist != 15.0:
+        cmd_parts.append(f"--max_site_dist {args.max_site_dist}")
+    if args.min_site_fraction:
+        cmd_parts.append(f"--min_site_fraction {args.min_site_fraction}")
+    if args.filter_interface_pae:
+        cmd_parts.append(f"--filter_site_pae {args.filter_interface_pae}")
+    if args.esmfold_plddt_threshold != 80.0:
+        cmd_parts.append(f"--esmfold_plddt_threshold {args.esmfold_plddt_threshold}")
+    if bindcraft_filters_preset and bindcraft_filters_preset != "no_filters":
+        cmd_parts.append(f"--bindcraft_filters {bindcraft_filters_preset}")
+    cmd_parts.append(f"--out_dir {out_dir}")
+    if args.dry_run:
+        cmd_parts.append("--dry_run")
+    with open(params_file, "w") as f:
+        f.write("# Run command (reproducible)\n")
+        f.write("CUDA_VISIBLE_DEVICES=N \\\n  " + " \\\n  ".join(cmd_parts) + "\n")
+        f.write(f"\n# Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"# Machine: {os.uname().nodename}\n")
+    log(f"Run parameters saved → {params_file}")
+
     # ── Extract target sequence ───────────────────────────────────────────
     chain_info = get_chain_info(target_path)
     tchain     = chain_info.get(chain_id, {})
@@ -5358,10 +5848,16 @@ def main():
         "pxdesign":          run_pxdesign,
         "proteina":          run_proteina,
         "proteina_complexa": run_proteina_complexa,
+        "rfdiffusion3":      run_rfdiffusion3,
     }
 
     for tool in tools:
         n = n_designs.get(tool, 100)
+        # Clean any stale skip signal from a previous tool
+        skip_signal = out_dir / f".skip_{tool}"
+        if skip_signal.exists():
+            skip_signal.unlink()
+
         log(f"\n{'─' * 50}")
         log(f"STEP: {tool.upper()}  (n={n})")
         log(f"{'─' * 50}")
@@ -5378,6 +5874,14 @@ def main():
                 n, out_dir / tool, args.dry_run, **extra)
             all_designs.extend(designs)
             tool_results[tool] = f"OK ({len(designs)} designs)"
+        except SkipRequested:
+            # User skipped — collect whatever partial output exists
+            log(f"  {tool}: collecting partial output after skip...")
+            designs = _collect_partial_output(tool, out_dir / tool)
+            all_designs.extend(designs)
+            n_collected = len(designs)
+            log(f"  {tool}: skipped — {n_collected} partial designs collected")
+            tool_results[tool] = f"SKIPPED ({n_collected}/{n} designs)"
         except Exception as e:
             log(f"{tool} FAILED: {e}")
             # Retry once after GPU cleanup (crashed tools may leave zombie GPU processes)
@@ -5390,6 +5894,11 @@ def main():
                 all_designs.extend(designs)
                 tool_results[tool] = f"OK ({len(designs)} designs, retry)"
                 log(f"  {tool} succeeded on retry")
+            except SkipRequested:
+                log(f"  {tool}: skipped during retry")
+                designs = _collect_partial_output(tool, out_dir / tool)
+                all_designs.extend(designs)
+                tool_results[tool] = f"SKIPPED ({len(designs)} designs)"
             except Exception as e2:
                 log(f"{tool} FAILED on retry: {e2}")
                 tool_results[tool] = f"FAILED: {e}"

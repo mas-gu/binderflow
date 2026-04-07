@@ -1,0 +1,43 @@
+/* BinderFlow dark theme overrides */
+
+/* AG Grid dark theme fixes */
+.ag-theme-alpine-dark {
+    --ag-background-color: #0f172a;
+    --ag-header-background-color: #1e293b;
+    --ag-odd-row-background-color: #0f172a;
+    --ag-row-hover-color: #1e293b;
+    --ag-border-color: #334155;
+    --ag-header-foreground-color: #94a3b8;
+    --ag-foreground-color: #e2e8f0;
+    --ag-font-size: 13px;
+    --ag-row-height: 32px;
+    --ag-header-height: 36px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+
+/* Log terminal */
+#log-output {
+    line-height: 1.5;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* Drop zone */
+#drop-zone.dragover {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.05);
+}

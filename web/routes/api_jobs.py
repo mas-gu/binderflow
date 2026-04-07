@@ -1,0 +1,208 @@
+"""Job management API — create, list, cancel."""
+
+import json
+import re
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, Form, UploadFile, File, HTTPException, Request
+
+from .. import database
+from ..config import UPLOADS_DIR, OUTPUTS_BASE
+from ..gpu import query_gpus, invalidate_cache
+from .. import job_runner
+
+router = APIRouter(prefix="/api", tags=["jobs"])
+
+
+def _sanitize_name(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name)[:80]
+
+
+@router.post("/jobs")
+async def create_job(
+    request: Request,
+    job_name: str = Form(...),
+    job_type: str = Form("generate"),
+    project: str = Form(""),
+    target: UploadFile = File(None),
+    target_path: str = Form(""),
+    site: str = Form(...),
+    length: str = Form("60-80"),
+    tools: str = Form("rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa"),
+    mode: str = Form("test"),
+    gpu_id: int = Form(...),
+    ss_bias: str = Form("balanced"),
+    score_weights: str = Form("0.3,0.6,0.1"),
+    reprediction: bool = Form(False),
+    plip_top: int = Form(10),
+    no_cys: bool = Form(False),
+    max_aa_fraction: float = Form(None),
+    min_sc: float = Form(None),
+    max_refolding_rmsd: float = Form(None),
+    min_site_interface_fraction: float = Form(None),
+    max_site_dist: float = Form(None),
+    min_site_fraction: float = Form(None),
+    filter_site_pae: float = Form(None),
+    esmfold_plddt_threshold: float = Form(None),
+    top_n: int = Form(50),
+    results_dir: str = Form(""),
+    out_dir_override: str = Form(""),
+    max_interface_ke: float = Form(None),
+    bindcraft_filters: str = Form("no_filters"),
+):
+    username = request.cookies.get("binderflow_user", "")
+    project = project.strip() or "unassigned"
+    # Validate GPU — skip for rank_only reranks (no GPU needed)
+    # GPU busy check is informational only — don't block job creation
+    is_rerank_no_gpu = (job_type == "rerank" and not reprediction)
+    if not is_rerank_no_gpu:
+        gpus = query_gpus()
+        gpu = next((g for g in gpus if g.index == gpu_id), None)
+        if not gpu:
+            raise HTTPException(400, f"GPU {gpu_id} not found")
+
+    safe_name = _sanitize_name(job_name)
+    date_str = time.strftime("%Y-%m-%d")
+
+    # Handle target file
+    if target and target.filename:
+        # Upload file
+        upload_dir = UPLOADS_DIR / safe_name
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        target_file = str(upload_dir / target.filename)
+        content = await target.read()
+        with open(target_file, "wb") as f:
+            f.write(content)
+    elif target_path:
+        target_file = target_path
+        if not Path(target_file).exists():
+            raise HTTPException(400, f"Target file not found: {target_file}")
+    else:
+        raise HTTPException(400, "No target file provided")
+
+    # Output directory — use override for reranks into subfolder
+    if not project or not project.strip():
+        project = "unassigned"
+    if out_dir_override:
+        out_dir = out_dir_override
+    else:
+        safe_project = _sanitize_name(project)
+        out_dir = str(OUTPUTS_BASE / safe_project / f"{date_str}_{safe_name}")
+    log_file = str(Path(out_dir) / "run.log")
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    params = {
+        "job_type": job_type,
+        "target_file": target_file,
+        "site": site,
+        "length": length,
+        "tools": tools,
+        "mode": mode,
+        "ss_bias": ss_bias,
+        "score_weights": score_weights,
+        "reprediction": reprediction,
+        "plip_top": plip_top,
+        "no_cys": no_cys,
+        "max_aa_fraction": max_aa_fraction,
+        "min_sc": min_sc,
+        "max_refolding_rmsd": max_refolding_rmsd,
+        "min_site_interface_fraction": min_site_interface_fraction,
+        "max_site_dist": max_site_dist,
+        "min_site_fraction": min_site_fraction,
+        "filter_site_pae": filter_site_pae,
+        "esmfold_plddt_threshold": esmfold_plddt_threshold,
+        "max_interface_ke": max_interface_ke,
+        "top_n": top_n,
+        "bindcraft_filters": bindcraft_filters,
+        "out_dir": out_dir,
+        "log_file": log_file,
+        "results_dir": results_dir,
+    }
+
+    job_id = await database.create_job(
+        name=job_name,
+        job_type=job_type,
+        gpu_id=gpu_id,
+        target_file=target_file,
+        site=site,
+        length=length,
+        tools=tools,
+        mode=mode,
+        params=params,
+        out_dir=out_dir,
+        log_file=log_file,
+        username=username,
+        project=project,
+    )
+
+    await job_runner.launch_job(job_id, params, gpu_id)
+    invalidate_cache()
+    database.add_shared_project(project)
+
+    return {"job_id": job_id, "status": "running", "out_dir": out_dir}
+
+
+@router.get("/jobs")
+async def list_jobs(status: str = None, limit: int = 50):
+    jobs = await database.list_jobs(status=status, limit=limit)
+    for j in jobs:
+        if j.get("params_json"):
+            j["params"] = json.loads(j["params_json"])
+    return jobs
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = await database.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.get("params_json"):
+        job["params"] = json.loads(job["params_json"])
+    return job
+
+
+@router.post("/jobs/{job_id}/archive")
+async def archive_job(job_id: str):
+    job = await database.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    await database.update_job(job_id, archived=1)
+    return {"archived": True}
+
+
+@router.delete("/jobs/{job_id}")
+async def cancel_job(job_id: str):
+    job = await database.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] != "running":
+        raise HTTPException(400, f"Job is {job['status']}, cannot cancel")
+    ok = await job_runner.cancel_job(job_id)
+    invalidate_cache()
+    return {"cancelled": ok}
+
+
+@router.post("/jobs/{job_id}/skip/{tool}")
+async def skip_tool(job_id: str, tool: str):
+    """Write a skip signal file for the specified tool.
+
+    The pipeline polls for .skip_{tool} in the output directory and
+    terminates the running subprocess when found. Only affects the
+    current generation step — validation steps are not skippable.
+    """
+    VALID_TOOLS = {"rfdiffusion", "boltzgen", "bindcraft", "pxdesign",
+                   "proteina", "proteina_complexa"}
+    if tool not in VALID_TOOLS:
+        raise HTTPException(400, f"Invalid tool: {tool}. Must be one of {VALID_TOOLS}")
+
+    job = await database.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] != "running":
+        raise HTTPException(400, f"Job is {job['status']}, cannot skip tool")
+
+    out_dir = Path(job["out_dir"])
+    skip_file = out_dir / f".skip_{tool}"
+    skip_file.write_text(f"skip requested at {time.time()}\n")
+    return {"skip_requested": True, "tool": tool, "signal_file": str(skip_file)}

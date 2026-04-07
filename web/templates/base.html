@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}BinderFlow{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        slate: {
+                            850: '#172033',
+                            950: '#0a0f1a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/static/style.css">
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-slate-900 border-b border-slate-700 px-6 py-3">
+        <div class="flex items-center justify-between max-w-7xl mx-auto">
+            <a href="/" class="text-xl font-bold text-blue-400 hover:text-blue-300">
+                BinderFlow
+            </a>
+            <div class="flex gap-4 items-center">
+                <a href="/" class="text-slate-300 hover:text-white px-3 py-1 rounded hover:bg-slate-800">Dashboard</a>
+                <a href="/rerank" class="text-slate-300 hover:text-white px-3 py-1 rounded hover:bg-slate-800">Rerank</a>
+                <a href="/manager" class="text-slate-300 hover:text-white px-3 py-1 rounded hover:bg-slate-800">Manager</a>
+                <a href="/launch" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1 rounded font-medium">New Job</a>
+                {% if username %}
+                <span class="text-slate-500">|</span>
+                <span class="text-sm text-slate-400">{{ username }}</span>
+                <a href="/logout" class="text-xs text-slate-500 hover:text-slate-300">Logout</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <!-- Content -->
+    <main class="max-w-7xl mx-auto px-6 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script src="/static/app.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

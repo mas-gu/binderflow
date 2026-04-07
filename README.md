@@ -2,15 +2,13 @@
 
 **Author:** Guillaume Mas
 
-A unified pipeline for de novo protein binder design using six complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
-
-<img width="3999" height="1158" alt="pipeline_overview" src="https://github.com/user-attachments/assets/0db27013-e165-425d-94dc-5e74c1b94dca" />
+A unified pipeline for de novo protein binder design using seven complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
 
 ## Overview
 
 Given a target protein PDB and a binding site, the pipeline:
 
-1. **Generates** binder candidates using up to 6 design tools in parallel
+1. **Generates** binder candidates using up to 7 design tools in parallel
 2. **Validates** all designs with ESMFold (fast fold quality filter) and Boltz-2 (uniform cross-tool scoring with site pocket constraint)
 3. **Scores** interfaces with Rosetta
 4. **Ranks** all designs by combined score (pLDDT + iPTM + dG)
@@ -27,20 +25,57 @@ Given a target protein PDB and a binding site, the pipeline:
 | [PXDesign](https://github.com/bytedance/PXDesign) | DiT diffusion + AF2-IG | Backbone + sequence + validation | ByteDance, 2024 |
 | [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina/) | Flow-based backbone | Unconditional backbones + ProteinMPNN | NVIDIA, 2024 |
 | [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) | Flow-based full-atom | Target-conditioned binder design | NVIDIA, ICLR 2026 |
+| [RFdiffusion3](https://github.com/RosettaCommons/foundry) | All-atom diffusion | Full-atom binder + sequence (Foundry) | Baker Lab, 2025 |
 
-## Quick Start
+## Two Ways to Use
+
+BinderFlow can be used via the **command line** or the **web interface**. Both run the same underlying pipeline scripts and produce identical outputs.
+
+| | Command Line | Web Interface |
+|---|---|---|
+| **Best for** | Scripting, automation, batch runs | Interactive exploration, team use |
+| **Launch jobs** | `python generate_binders.py ...` | Browser form with drag-drop upload |
+| **Monitor** | Terminal output / log files | Live log streaming + progress sidebar |
+| **View results** | PyMOL scripts + CSV | Interactive plots, 3D viewer, filters |
+| **Rerank** | `python rerank_binders.py ...` | Browser form with presets |
+| **GPU management** | `CUDA_VISIBLE_DEVICES=N` | GPU dashboard + auto-assignment |
+| **Multi-user** | N/A | Username login + project organization |
+
+### Screenshots — Web Interface
+
+| | |
+|---|---|
+| ![Dashboard](docs/screenshots/web_dashboard.png) | ![Launch](docs/screenshots/web_launch.png) |
+| Dashboard — GPU status, project cards, job history | Launch — target upload, tool/mode selection |
+| ![Monitor](docs/screenshots/web_monitor.png) | ![Rankings](docs/screenshots/web_rankings.png) |
+| Monitor — live log streaming, tool progress | Rankings — sortable table with color gradients |
+| ![Scatter](docs/screenshots/web_scatter.png) | ![Radar](docs/screenshots/web_radar.png) |
+| Scatter — 13 presets, colored by tool | Radar — 8-axis developability profile |
+| ![Tools](docs/screenshots/web_tools.png) | ![Detail](docs/screenshots/web_detail.png) |
+| Tool comparison — box plots, histograms | Design detail — scores, sequence, 3D viewer |
+| ![Rerank](docs/screenshots/web_rerank.png) | |
+| Rerank — filter presets, live re-scoring | |
+
+### Quick Start — Web Interface
 
 ```bash
-# Activate host environment
+conda activate boltz
+uvicorn binderflow.web.app:app --host 0.0.0.0 --port 8080
+```
+
+Open `http://localhost:8080/`, log in with your name, create a project, and launch a job from the browser.
+
+### Quick Start — Command Line
+
+```bash
 conda activate boltz
 
 # Test run (6 tools, ~4h, single GPU)
-# Use CUDA_VISIBLE_DEVICES to pin GPU (do NOT use --device with CUDA_VISIBLE_DEVICES)
 CUDA_VISIBLE_DEVICES=0 python generate_binders.py \
     --target target.pdb \
     --site "A:11-17,119-124" \
     --length 60-80 \
-    --tools rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa \
+    --tools rfdiffusion,rfdiffusion3,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa \
     --mode test \
     --ss_bias balanced \
     --max_site_dist 8.0 \
@@ -48,6 +83,8 @@ CUDA_VISIBLE_DEVICES=0 python generate_binders.py \
     --plip_top 10 \
     --out_dir ./output/
 ```
+
+CLI results can be viewed in the web interface by registering the output directory, or explored with the PyQt6 desktop browser (`python -m binderflow.binder_browser --results_dir ./output/`).
 
 ## Installation
 
@@ -82,6 +119,7 @@ Each tool runs in its own isolated conda environment. Install each tool followin
 | PXDesign | `pxdesign` | [GitHub](https://github.com/bytedance/PXDesign) |
 | Proteina | `proteina_env` (prefix env) | [GitHub](https://github.com/NVIDIA-Digital-Bio/proteina/) |
 | Proteina Complexa | UV venv (not conda) | [GitHub](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) |
+| RFdiffusion3 | `rfdiffusion3` (via Foundry) | [GitHub](https://github.com/RosettaCommons/foundry) — `pip install "rc-foundry[all]"` |
 | ESMFold | `esmfold` | [HuggingFace](https://huggingface.co/facebook/esmfold_v1) |
 
 ### 3. Optional Dependencies
@@ -141,9 +179,9 @@ $BINDER_WEIGHTS_DIR/
 
 | Mode | Total designs | Full pipeline (1 GPU) | Revalidation only |
 |------|--------------|----------------------|-------------------|
-| test | 135 | ~4h | ~30 min |
-| standard | 1,310 | ~37h | ~10.5h |
-| production | 12,020 | ~5 days | ~36h |
+| test | ~215 | ~4h | ~30 min |
+| standard | ~1,510 | ~37h | ~10.5h |
+| production | ~4,270 | ~5 days | ~36h |
 
 Boltz-2 MSA is pre-computed once (~60s). Revalidation skips design generation + ESMFold.
 
@@ -152,11 +190,15 @@ Per-tool breakdown:
 | Tool | test | standard | production |
 |------|------|----------|------------|
 | RFdiffusion | 20 | 200 | 500 |
-| BoltzGen | 50 | 500 | 10,000 |
-| BindCraft | 5 | 10 | 20 |
+| RFdiffusion3 (×4 models) | 20 (80) | 100 (400) | 250 (1,000) |
+| BoltzGen | 50 | 500 | 2,000 |
+| BindCraft (no filters) | 5 | 10 | 20 |
+| BindCraft (with filters) | 2 | 4 | 10 |
 | PXDesign | 20 | 200 | 500 |
 | Proteina | 20 | 200 | 500 |
 | Proteina Complexa | 20 | 200 | 500 |
+
+BindCraft count auto-reduces when filters are active (strict filters = slow per design).
 
 ### Key Flags
 
@@ -168,8 +210,14 @@ Per-tool breakdown:
 | `--score_weights 0.4,0.5,0.1` | pLDDT, iPTM, dG weights (default). Recommended: `0.3,0.6,0.1` for higher iPTM weight | Higher iPTM = binding quality |
 | `--plip_top 10` | PLIP analysis on top N designs | 10 |
 | `--boltz_devices 3` | Multi-GPU for Boltz-2 batch validation | All free GPUs |
+| `--bindcraft_filters` | BindCraft internal quality filters. Presets: `no_filters` (default), `relaxed`, `default`, `kras_relaxed`, `peptide`, `peptide_relaxed` | `no_filters` or `relaxed` |
+| `--esmfold_plddt_threshold` | Min ESMFold pLDDT for pre-filter (default: 80) | 80 |
 
 ### Re-ranking Existing Runs
+
+**Two modes:**
+- **Without `--reprediction`** (rank-only): loads cached ESMFold/Boltz-2/Rosetta scores from the original run, re-applies filters and re-ranks. Fast, no GPU needed.
+- **With `--reprediction`**: runs fresh ESMFold + Boltz-2 + Rosetta, ignoring cached scores from the original run. Uses only its own `out_dir` cache (rerun to same dir reuses cache; new dir starts clean). GPU required.
 
 ```bash
 # Re-rank with quality + geometric filters (no re-validation, fast)
@@ -231,6 +279,21 @@ CUDA_VISIBLE_DEVICES=0 python generate_binders.py \
 Quality filters and geometric filters listed below are available in `rerank_binders.py`. The `generate_binders.py` pipeline applies ESMFold pre-filter, Boltz-2 validation, geometric site metrics, Rosetta scoring, and SS/KE composition automatically.
 
 Filters are applied in this order during ranking. Quality filters run first, geometric site filters last.
+
+### BindCraft Internal Filters
+
+BindCraft can apply its own quality filters during design generation (before pipeline scoring). These are set via `--bindcraft_filters`:
+
+| Preset | iPTM | pLDDT | Sc | RMSD | Best for |
+|--------|------|-------|-----|------|----------|
+| `no_filters` (default) | — | — | — | — | Let pipeline decide |
+| `relaxed` | >= 0.4 | >= 0.75 | >= 0.5 | <= 5.0 | Difficult targets |
+| `kras_relaxed` | >= 0.3 | >= 0.65 | >= 0.4 | <= 5.0 | Very difficult sites |
+| `default` | >= 0.5 | >= 0.8 | >= 0.6 | <= 3.5 | Easy targets (may stall) |
+| `peptide` | >= 0.4 | >= 0.8 | >= 0.55 | <= 2.5 | Peptide binders |
+| `peptide_relaxed` | >= 0.4 | >= 0.8 | — | <= 3.5 | Peptide, difficult targets |
+
+**Warning:** `default` filters are strict and may cause BindCraft to stall for hours on difficult targets. Use `relaxed` for most cases or `no_filters` to let the pipeline handle quality gating.
 
 ### Quality Filters
 
@@ -312,7 +375,7 @@ Core scoring columns plus per-filter metrics:
 | `rosetta_sap` | Surface aggregation propensity (lower = less aggregation-prone) |
 | `refolding_rmsd` | CA RMSD: ESMFold binder vs Boltz-2 binder |
 | `netsolp_solubility` | NetSolP predicted E.coli solubility (0-1, higher = more soluble) |
-| `pDockQ` | Docking quality: sigmoid of iPTM × iPLDDT (pDockQ2 formula) (browser-only, computed on load) |
+| `pDockQ` | PAE-based docking quality (pDockQ2, Zhu 2023). Uses interface PAE + pLDDT (browser-only, computed on load) |
 | `site_interface_fraction` | SIF: binder interface at site / total interface |
 | `site_contact_fraction` | Site residues contacted / total site residues |
 | `site_centroid_dist_CA` | Binder interface centroid to site CA centroid (A) |
@@ -336,7 +399,7 @@ With `--reprediction`, all tools are scored by Boltz-2 iPTM for uniform cross-to
 ## Validation Pipeline
 
 ```
-Design (6 tools) → GPU cleanup between tools (auto-retry on failure)
+Design (7 tools) → GPU cleanup between tools (auto-retry on failure)
 → ESMFold filter (pLDDT >= 80) → Boltz-2 batch prediction (pre-computed MSA, fast mode)
 → Geometric site metrics (parallel, 12 CPUs) → Rosetta scoring (dG, Sc, SAP)
 → SS + K/E composition → Ranking → PLIP
@@ -452,6 +515,8 @@ Run both `balanced` and `beta` for structural diversity. Beta mode produces lowe
 | `PROTEINA_COMPLEXA_DIR` | `{SOFTWARE}/Proteina-Complexa` | Proteina Complexa installation |
 | `PROTEINA_COMPLEXA_VENV` | `{SOFTWARE}/Proteina-Complexa/.venv` | Proteina Complexa UV venv |
 | `PROTEINA_PYTHON` | `{SOFTWARE}/envs/proteina_env/bin/python` | Proteina Python binary |
+| `RFD3_ENV` | `{SOFTWARE}/envs/rfdiffusion3` | RFdiffusion3 (Foundry) conda env |
+| `RFD3_WEIGHTS` | `{WEIGHTS}/foundry` | RFdiffusion3 model weights |
 
 ## Conda Environment Summary
 
@@ -466,14 +531,56 @@ Run both `balanced` and `beta` for structural diversity. Beta mode produces lowe
 | `proteina_env` (prefix) | Proteina | PyTorch |
 | `esmfold` | ESMFold | PyTorch, transformers, esm |
 | UV venv | Proteina Complexa | PyTorch, AF2, ESM2 (self-contained) |
+| `rfdiffusion3` | RFdiffusion3 (Foundry) | PyTorch, rc-foundry (includes RF3, ProteinMPNN, LigandMPNN) |
 
-## Binder Browser
+## Web Interface
 
-Interactive PyQt6 desktop application for exploring, comparing, and filtering binder design results.
+Browser-based interface for the full pipeline lifecycle: launch, monitor, analyze, and rerank.
+
+### Starting the server
 
 ```bash
-# Launch from the protein_folding directory
-python -m binders_pipeline.binder_browser --results_dir outputs/my_run/reranks/my_rerank/
+conda activate boltz
+uvicorn binderflow.web.app:app --host 0.0.0.0 --port 8080
+
+# Background mode
+nohup uvicorn binderflow.web.app:app --host 0.0.0.0 --port 8080 > /tmp/binderflow_server.log 2>&1 &
+```
+
+### Features
+
+**Job management:**
+- Username login (cookie-based, no password) — tracks who launched what
+- Project organization — group jobs by target/campaign, filter by project
+- GPU dashboard — real-time memory, temperature, utilization per GPU
+- Launch form — drag-drop target upload, tool/mode/SS bias selection, all pipeline flags
+- Live monitoring — SSE log streaming, per-tool progress sidebar, elapsed time
+- Cancel — kills full process tree (BoltzGen, BindCraft, conda subprocesses)
+
+**Results browser (replaces desktop PyQt6 app):**
+- Rankings table — AG Grid with sortable/filterable columns, color gradients, pDockQ + tier
+- Scatter plots — 13 presets + custom axes, colored by tool, click to select design
+- Radar chart — 8-axis developability profile (iPTM, Sc, RMSD, pDockQ, KE, SAP, solubility, SIF) with tier/tool/top-10 background modes
+- Tool comparison — box plots, histograms, score vs length per tool
+- 3D structure viewer — 3Dmol.js with tool-colored binder, gray target, red sticks on binding site residues
+- Design detail — 16 score cards, SS composition bars, sequence, PLIP interactions
+- Filter sidebar — score thresholds, tool toggles, SS bias — updates all views simultaneously
+- Rerank — apply quality + geometric filters, launch from browser
+
+### Architecture
+
+- FastAPI + uvicorn, Jinja2 templates, SQLite (aiosqlite)
+- Frontend: Tailwind CSS, AG Grid, Plotly.js, 3Dmol.js (all via CDN, no build step)
+- Database stored locally per machine at `/tmp/binderflow/<hostname>/binderflow.db`
+- Multi-machine support — same codebase on shared storage, independent DBs
+
+## Desktop Browser (alternative)
+
+PyQt6 desktop application with the same analysis features as the web results browser. Useful when you prefer a native app or are working locally without a web server.
+
+```bash
+pip install PyQt6 matplotlib pandas numpy
+python -m binderflow.binder_browser --results_dir ./output/
 ```
 
 ### Features
@@ -487,16 +594,16 @@ python -m binders_pipeline.binder_browser --results_dir outputs/my_run/reranks/m
 |------|--------|-----------|
 | Binding | iPTM | > 0.8 |
 | Structure | Shape complementarity (Sc) | > 0.55 |
-| Stability | Refolding RMSD | < 2.0 Å |
-| Docking | pDockQ | > 0.8 |
-| Low KE | Interface K+E fraction | < 20% |
+| Stability | Refolding RMSD | < 2.5 Å |
+| Interface | Mean interface PAE | < 10 Å |
+| Low K+E | Interface K+E fraction | < 25% |
 | Low Aggregation | SAP score | < 80 |
 | Solubility | NetSolP (E.coli) | > 0.7 |
 | Site Focus | SIF | > 0.5 |
 
 - **Design detail** — rank navigation dropdown, all score cards, sequence, SS composition
 - **Tier classification** — Top 7.5% = Tier 1, next 17.5% = Tier 2, rest = Tier 3
-- **pDockQ** — sigmoid of iPTM × iPLDDT (pDockQ2 formula, computed on load)
+- **Adaptive radar normalization** — threshold-anchored (RMSD, PAE, KE, SIF, Sc) and data-driven (SAP) scaling for meaningful visual discrimination
 - **Dark theme** — modern dark UI with matching matplotlib plots
 - **Scores guide** — "? Scores Guide" button explains each radar axis
 
@@ -543,6 +650,7 @@ Each design tool has its own license — you are responsible for complying with 
 | [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina/) | NVIDIA Custom | **Non-commercial / research use only** |
 | [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) | NVIDIA Custom | **Non-commercial / research use only** |
 | [Boltz-2](https://github.com/jwohlwend/boltz) | MIT | Attribution required |
+| [RFdiffusion3 / Foundry](https://github.com/RosettaCommons/foundry) | BSD 3-clause | Attribution required |
 | [ESMFold](https://github.com/facebookresearch/esmfold) | MIT | Attribution required |
 
 > **Note:** Proteina and Proteina Complexa (NVIDIA) are restricted to non-commercial and research/evaluation use. If you use these tools, ensure your use case complies with NVIDIA's license terms.

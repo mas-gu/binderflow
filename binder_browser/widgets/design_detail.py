@@ -21,7 +21,7 @@ SCORE_CARDS = [
     ("Boltz iPTM", "boltz_iptm", ".4f", True),
     ("Boltz pLDDT", "boltz_binder_plddt", ".1f", True),
     ("ESMFold pLDDT", "esmfold_plddt", ".1f", True),
-    ("pDockQ", "pDockQ", ".3f", True),
+    ("Interface PAE", "boltz_mean_interface_pae", ".1f", False),
     ("Rosetta dG", "rosetta_dG", ".1f", False),
     ("Rosetta SC", "rosetta_sc", ".3f", True),
     ("Rosetta SAP", "rosetta_sap", ".1f", False),

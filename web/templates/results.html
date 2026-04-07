@@ -1,0 +1,511 @@
+{% extends "base.html" %}
+{% block title %}BinderFlow — Results: {{ job.name }}{% endblock %}
+
+{% block head %}
+<!-- AG Grid -->
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@33.1.1/dist/ag-grid-community.min.js"></script>
+<!-- Plotly -->
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<!-- 3Dmol -->
+<script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+<!-- Three.js r147 (last UMD build with OrbitControls) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="flex justify-between items-center mb-4">
+    <div>
+        <h1 class="text-2xl font-bold">{{ job.name }}</h1>
+        <p class="text-sm text-slate-400">
+            {% if job.project %}<span class="text-blue-400">{{ job.project }}</span> &middot; {% endif %}
+            {{ job.tools }} &middot; {{ job.mode }} mode
+            {% if job.username %} &middot; by {{ job.username }}{% endif %}
+        </p>
+    </div>
+    <div class="flex gap-2 items-center">
+        <span id="filter-status" class="text-xs text-slate-500"></span>
+        <button id="filter-toggle" class="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-1 rounded">Filters</button>
+        <a href="/api/results/{{ job.id }}/rankings/csv"
+           class="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-1 rounded">Download CSV</a>
+        <a href="/monitor/{{ job.id }}"
+           class="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-1 rounded">View Log</a>
+    </div>
+</div>
+
+<!-- Tabs -->
+<div class="border-b border-slate-700 mb-4">
+    <div class="flex gap-1">
+        <button class="tab-btn active px-4 py-2 text-sm rounded-t border-b-2 border-blue-500 text-blue-400" data-tab="rankings">Rankings</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="scatter">Scatter</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="radar">Radar</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="tools">Tools</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="dashboard">Dashboard</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="detail">Design Detail</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-emerald-400 hover:text-emerald-300" data-tab="livererank">Live Rerank</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-amber-400 hover:text-amber-300" data-tab="rerank">Rerank</button>
+    </div>
+</div>
+
+<!-- Main content + filter sidebar -->
+<div class="flex gap-4">
+    <!-- Tab panels -->
+    <div class="flex-1 min-w-0">
+
+        <!-- Rankings -->
+        <div id="tab-rankings" class="tab-panel">
+            <div id="rankings-grid" class="ag-theme-alpine-dark" style="height: 600px; width: 100%;"></div>
+        </div>
+
+        <!-- Scatter -->
+        <div id="tab-scatter" class="tab-panel hidden">
+            <div class="flex gap-3 mb-3 items-center">
+                <select id="scatter-preset" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm">
+                    <option value="">Custom axes</option>
+                </select>
+                <select id="scatter-x" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm"></select>
+                <span class="text-slate-500">vs</span>
+                <select id="scatter-y" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm"></select>
+            </div>
+            <div id="scatter-plot" style="height: 550px;"></div>
+        </div>
+
+        <!-- Radar -->
+        <div id="tab-radar" class="tab-panel hidden">
+            <div class="flex gap-3 mb-3 items-center">
+                <label class="text-sm text-slate-400">Background:</label>
+                <select id="radar-mode" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm">
+                    <option value="none">None (design only)</option>
+                    <option value="tiers">Tiers (1 vs 2 vs 3)</option>
+                    <option value="tools">Tools (median)</option>
+                    <option value="top10">Top 10 vs All</option>
+                </select>
+                <label class="text-sm text-slate-400 ml-4">Design:</label>
+                <select id="radar-design" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm flex-1 max-w-sm">
+                    <option value="">None</option>
+                </select>
+            </div>
+            <div id="radar-plot" style="height: 520px;"></div>
+            <!-- Axis legend -->
+            <details class="mt-2" open>
+                <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">Axis scaling guide</summary>
+                <div id="radar-legend" class="mt-1 bg-slate-900 border border-slate-700 rounded p-3 overflow-x-auto"></div>
+            </details>
+        </div>
+
+        <!-- Tool Comparison -->
+        <div id="tab-tools" class="tab-panel hidden">
+            <div class="flex gap-3 mb-3 items-center">
+                <label class="text-sm text-slate-400">Plot:</label>
+                <select id="tool-mode" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm">
+                    <option value="box">Box Plot</option>
+                    <option value="histogram">Histogram</option>
+                    <option value="score_vs_length">Score vs Length</option>
+                </select>
+                <label class="text-sm text-slate-400 ml-4">Metric:</label>
+                <select id="tool-metric" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm"></select>
+            </div>
+            <div id="tool-plot" style="height: 550px;"></div>
+        </div>
+
+        <!-- Dashboard -->
+        <div id="tab-dashboard" class="tab-panel hidden">
+            <img id="dashboard-img" src="/api/results/{{ job.id }}/dashboard" class="max-w-full rounded-lg border border-slate-700"
+                 onerror="this.parentElement.innerHTML='<p class=\'text-slate-400 p-8\'>Dashboard not available</p>'">
+        </div>
+
+        <!-- Design Detail -->
+        <div id="tab-detail" class="tab-panel hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                    <div class="flex gap-2 mb-3 items-center">
+                        <label class="text-sm text-slate-400">Design:</label>
+                        <select id="detail-select" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm flex-1"></select>
+                    </div>
+                    <div id="score-cards" class="grid grid-cols-2 gap-2"></div>
+                    <!-- SS bars -->
+                    <div id="ss-bars" class="mt-3 bg-slate-900 border border-slate-700 rounded p-3 space-y-1"></div>
+                    <!-- Sequence -->
+                    <div class="mt-3 bg-slate-900 border border-slate-700 rounded p-3">
+                        <label class="text-xs text-slate-500">Sequence</label>
+                        <pre id="detail-seq" class="text-xs text-green-400 mt-1 break-all whitespace-pre-wrap"></pre>
+                    </div>
+                    <!-- PLIP -->
+                    <div class="mt-3 bg-slate-900 border border-slate-700 rounded p-3">
+                        <label class="text-xs text-slate-500">PLIP Interactions</label>
+                        <div id="plip-content" class="mt-1">
+                            <p class="text-xs text-slate-500">Select a design to view PLIP data</p>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div id="mol-viewer" class="bg-slate-900 border border-slate-700 rounded-lg" style="height: 500px; position: relative;"></div>
+                    <p class="text-xs text-slate-500 mt-1">Binder colored by tool | Gray: target | Red sticks: site residues</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Live Rerank -->
+        <div id="tab-livererank" class="tab-panel hidden">
+            <div class="flex gap-4" style="height: 700px;">
+                <!-- Filter Panel (left) -->
+                <div id="livererank-filters" class="w-72 shrink-0 overflow-y-auto bg-slate-900 border border-slate-700 rounded-lg p-4 space-y-4">
+                    <h3 class="text-sm font-semibold text-slate-300">Live Filters</h3>
+
+                    <!-- Score weights -->
+                    <div class="space-y-2">
+                        <p class="text-xs text-slate-500 font-medium">Score Weights</p>
+                        <div><label class="text-xs text-slate-400">pLDDT <span id="lr-w-plddt-val" class="text-blue-400">0.3</span></label>
+                            <input type="range" id="lr-w-plddt" min="0" max="1" step="0.05" value="0.3" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">iPTM <span id="lr-w-iptm-val" class="text-blue-400">0.6</span></label>
+                            <input type="range" id="lr-w-iptm" min="0" max="1" step="0.05" value="0.6" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">dG <span id="lr-w-dg-val" class="text-blue-400">0.1</span></label>
+                            <input type="range" id="lr-w-dg" min="0" max="1" step="0.05" value="0.1" class="w-full h-1 accent-blue-500"></div>
+                    </div>
+
+                    <!-- Quality filters -->
+                    <div class="space-y-2">
+                        <p class="text-xs text-slate-500 font-medium">Quality Filters</p>
+                        <div><label class="text-xs text-slate-400">Min iPTM <span id="lr-min-iptm-val" class="text-blue-400">0</span></label>
+                            <input type="range" id="lr-min-iptm" min="0" max="1" step="0.01" value="0" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Min pLDDT <span id="lr-min-plddt-val" class="text-blue-400">0</span></label>
+                            <input type="range" id="lr-min-plddt" min="0" max="100" step="1" value="0" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Max refolding RMSD <span id="lr-max-refolding-rmsd-val" class="text-blue-400">10</span></label>
+                            <input type="range" id="lr-max-refolding-rmsd" min="0" max="10" step="0.1" value="10" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Max interface PAE <span id="lr-max-interface-pae-val" class="text-blue-400">30</span></label>
+                            <input type="range" id="lr-max-interface-pae" min="0" max="30" step="0.5" value="30" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Max site PAE <span id="lr-max-site-pae-val" class="text-blue-400">30</span></label>
+                            <input type="range" id="lr-max-site-pae" min="0" max="30" step="0.5" value="30" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Min Sc <span id="lr-min-sc-val" class="text-blue-400">0</span></label>
+                            <input type="range" id="lr-min-sc" min="0" max="1" step="0.01" value="0" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Max interface KE <span id="lr-max-interface-ke-val" class="text-blue-400">1</span></label>
+                            <input type="range" id="lr-max-interface-ke" min="0" max="1" step="0.01" value="1" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Max AA fraction <span id="lr-max-aa-fraction-val" class="text-blue-400">1</span></label>
+                            <input type="range" id="lr-max-aa-fraction" min="0" max="1" step="0.01" value="1" class="w-full h-1 accent-blue-500"></div>
+                    </div>
+
+                    <!-- Geometric filters -->
+                    <div class="space-y-2">
+                        <p class="text-xs text-slate-500 font-medium">Geometric Filters</p>
+                        <div><label class="text-xs text-slate-400">Min SIF <span id="lr-min-sif-val" class="text-blue-400">0</span></label>
+                            <input type="range" id="lr-min-sif" min="0" max="1" step="0.01" value="0" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Max centroid dist <span id="lr-max-centroid-dist-val" class="text-blue-400">40</span></label>
+                            <input type="range" id="lr-max-centroid-dist" min="0" max="40" step="0.5" value="40" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Min cos angle <span id="lr-min-cos-angle-val" class="text-blue-400">-1</span></label>
+                            <input type="range" id="lr-min-cos-angle" min="-1" max="1" step="0.01" value="-1" class="w-full h-1 accent-blue-500"></div>
+                        <div><label class="text-xs text-slate-400">Min contact fraction <span id="lr-min-contact-fraction-val" class="text-blue-400">0</span></label>
+                            <input type="range" id="lr-min-contact-fraction" min="0" max="1" step="0.05" value="0" class="w-full h-1 accent-blue-500"></div>
+                    </div>
+
+                    <!-- Special -->
+                    <div class="space-y-2">
+                        <p class="text-xs text-slate-500 font-medium">Special</p>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs text-slate-400">
+                            <input type="checkbox" id="lr-no-cys" class="border-slate-600"> No cysteine
+                        </label>
+                        <div>
+                            <p class="text-xs text-slate-500 mb-1">SS Bias</p>
+                            <div class="space-y-1">
+                                <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                                    <input type="radio" name="lr_ss_bias" value="any" checked class="border-slate-600"> Any</label>
+                                <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                                    <input type="radio" name="lr_ss_bias" value="helix" class="border-slate-600"> Helix (&gt;40%)</label>
+                                <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                                    <input type="radio" name="lr_ss_bias" value="sheet" class="border-slate-600"> Sheet (&gt;30%)</label>
+                                <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                                    <input type="radio" name="lr_ss_bias" value="balanced" class="border-slate-600"> Balanced</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tools -->
+                    <div>
+                        <p class="text-xs text-slate-500 font-medium mb-1">Tools</p>
+                        <div id="lr-tool-toggles" class="space-y-1"></div>
+                        <div class="flex gap-2 mt-1">
+                            <button id="lr-tools-all" type="button" class="text-xs text-blue-400 hover:text-blue-300">All</button>
+                            <button id="lr-tools-none" type="button" class="text-xs text-blue-400 hover:text-blue-300">None</button>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="space-y-2 pt-2 border-t border-slate-700">
+                        <button id="lr-reset" type="button" class="w-full bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-3 py-1.5 rounded">Reset All</button>
+                        <button id="lr-export-csv" type="button" class="w-full bg-blue-700 hover:bg-blue-600 text-xs text-white px-3 py-1.5 rounded">Export Filtered CSV</button>
+                        <button id="lr-apply-rerank" type="button" class="w-full bg-amber-700 hover:bg-amber-600 text-xs text-white px-3 py-1.5 rounded">Apply to Rerank</button>
+                    </div>
+                </div>
+
+                <!-- Right panel: stats + 3D + detail -->
+                <div class="flex-1 min-w-0 flex flex-col gap-2">
+                    <!-- Stats bar -->
+                    <div id="livererank-stats" class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
+                        <span class="text-slate-500">Loading geometry data...</span>
+                    </div>
+                    <!-- Histogram -->
+                    <canvas id="livererank-histogram" class="rounded border border-slate-700" style="width:200px;height:60px;"></canvas>
+                    <!-- Camera toolbar -->
+                    <div class="flex gap-1 flex-wrap">
+                        <button data-camera-view="front"   class="bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-2 py-1 rounded">Front</button>
+                        <button data-camera-view="back"    class="bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-2 py-1 rounded">Back</button>
+                        <button data-camera-view="top"     class="bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-2 py-1 rounded">Top</button>
+                        <button data-camera-view="bottom"  class="bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-2 py-1 rounded">Bottom</button>
+                        <button data-camera-view="left"    class="bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-2 py-1 rounded">Left</button>
+                        <button data-camera-view="right"   class="bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-2 py-1 rounded">Right</button>
+                        <span class="border-l border-slate-600 mx-1"></span>
+                        <button data-camera-view="site"    class="bg-red-800 hover:bg-red-700 text-xs text-white px-2 py-1 rounded">Site Focus</button>
+                        <button data-camera-view="initial" class="bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-2 py-1 rounded">Reset</button>
+                    </div>
+                    <!-- 3D viewport -->
+                    <div id="livererank-viewport" class="flex-1 rounded-lg border border-slate-700 relative" style="min-height: 400px;">
+                        <div id="livererank-spinner" class="absolute inset-0 flex items-center justify-center bg-slate-900/90 z-10">
+                            <div class="text-center">
+                                <div class="text-slate-400 text-sm mb-2">Preparing 3D view...</div>
+                                <div class="w-64 bg-slate-800 rounded-full h-2.5 mx-auto">
+                                    <div class="bg-emerald-500 h-2.5 rounded-full" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Detail card (shown on click) -->
+                    <div id="livererank-detail" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-3"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Rerank -->
+        <div id="tab-rerank" class="tab-panel hidden">
+            <form id="rerank-form" class="space-y-6 max-w-4xl" enctype="multipart/form-data">
+                <!-- Input (pre-filled from parent job) -->
+                <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+                    <h2 class="text-lg font-semibold mb-4 text-slate-200">Rerank This Run</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Job Name</label>
+                            <input type="text" name="job_name" required
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                                   value="{{ job.name }}_rerank">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Results directory</label>
+                            <input type="text" name="results_dir" required id="rr_results_dir"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                                   value="{{ job.out_dir }}">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Target PDB (upload)</label>
+                            <div id="rr-drop-zone" class="border-2 border-dashed border-slate-600 rounded-lg p-3 text-center hover:border-blue-500 cursor-pointer transition-colors mb-1">
+                                <input type="file" name="target" accept=".pdb,.cif" class="hidden" id="rr-file-input">
+                                <p class="text-sm text-slate-400" id="rr-drop-text">Drop PDB/CIF here or click to browse</p>
+                            </div>
+                            <label class="block text-xs text-slate-500 mb-1">Or: path on server</label>
+                            <input type="text" name="target_path" id="rr_target"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                                   value="{{ job.target_file }}">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Binding Site</label>
+                            <input type="text" name="site" required id="rr_site"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                                   value="{{ job.site }}">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Project</label>
+                            <input type="text" name="project" id="rr_project"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                                   value="{{ job.project or '' }}">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Output suffix</label>
+                            <input type="text" name="rr_suffix" value="nocys_aa30_sif40"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Scoring & Filters -->
+                <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+                    <h2 class="text-lg font-semibold mb-4 text-slate-200">Scoring & Filters</h2>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Score weights</label>
+                            <input type="text" name="score_weights" value="0.3,0.6,0.1"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">SS bias</label>
+                            <select name="ss_bias" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                                <option value="balanced" selected>balanced</option>
+                                <option value="helix">helix</option>
+                                <option value="beta">beta</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">PLIP top</label>
+                            <input type="number" name="plip_top" value="10"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                    </div>
+
+                    <h3 class="text-sm font-medium text-slate-300 mb-2">Quality Filters</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="no_cys" checked class="border-slate-600">
+                            <span class="text-sm">No cysteine</span>
+                        </label>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Max AA fraction</label>
+                            <input type="number" name="max_aa_fraction" step="0.01" value="0.30"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Min Sc</label>
+                            <input type="number" name="min_sc" step="0.01" placeholder="0.45"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Max refolding RMSD</label>
+                            <input type="number" name="max_refolding_rmsd" step="0.1" value="2.5"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Max interface KE</label>
+                            <input type="number" name="max_interface_ke" step="0.05" placeholder="0.25"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                    </div>
+
+                    <h3 class="text-sm font-medium text-slate-300 mb-2">Geometric Filters</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Min SIF</label>
+                            <input type="number" name="min_site_interface_fraction" step="0.05" value="0.40"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Max site dist (A)</label>
+                            <input type="number" name="max_site_dist" step="0.5" placeholder="8.0"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Min site fraction</label>
+                            <input type="number" name="min_site_fraction" step="0.1" placeholder="0.4"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reprediction -->
+                <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+                    <h2 class="text-lg font-semibold mb-4 text-slate-200">Reprediction (optional, requires GPU)</h2>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="reprediction" id="rr_reprediction" class="border-slate-600">
+                            <span class="text-sm">Enable Boltz-2 reprediction</span>
+                        </label>
+                        <div id="rr-plddt-threshold" class="hidden">
+                            <label class="block text-xs text-slate-500 mb-1">Min ESMFold pLDDT</label>
+                            <input type="number" name="esmfold_plddt_threshold" value="80" step="5" min="0" max="100"
+                                   class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div id="rr-gpu-select" class="hidden">
+                            <label class="block text-xs text-slate-500 mb-1">GPU</label>
+                            <select name="gpu_id" id="rr_gpu_id"
+                                    class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Launch -->
+                <div class="flex gap-3">
+                    <button type="submit"
+                            class="bg-amber-600 hover:bg-amber-500 text-white px-8 py-3 rounded-lg font-semibold text-lg">
+                        Run Rerank
+                    </button>
+                    <button type="button" id="rr-dryrun-btn"
+                            class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-6 py-3 rounded-lg font-medium">
+                        Dry Run
+                    </button>
+                </div>
+                <pre id="rr-dryrun-output" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4 text-xs text-green-400 overflow-x-auto whitespace-pre-wrap"></pre>
+                <div id="rr-status" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4 text-sm"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Filter Sidebar (hidden by default) -->
+    <div id="filter-sidebar" class="hidden w-64 shrink-0">
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 sticky top-4 space-y-4">
+            <h3 class="text-sm font-semibold text-slate-300">Filters</h3>
+
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-400">
+                <input type="checkbox" id="f-include-unranked" class="border-slate-600"> Include unranked
+            </label>
+
+            <!-- Score thresholds -->
+            <div class="space-y-2">
+                <p class="text-xs text-slate-500 font-medium">Score Thresholds</p>
+                <div><label class="text-xs text-slate-400">Min combined score</label>
+                    <input type="number" id="f-min-combined" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="-10" step="0.05"></div>
+                <div><label class="text-xs text-slate-400">Min iPTM</label>
+                    <input type="number" id="f-min-iptm" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="0" step="0.05" min="0" max="1"></div>
+                <div><label class="text-xs text-slate-400">Min ESMFold pLDDT</label>
+                    <input type="number" id="f-min-plddt" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="0" step="5" min="0" max="100"></div>
+                <div><label class="text-xs text-slate-400">Max Rosetta dG</label>
+                    <input type="number" id="f-max-dg" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="100" step="5"></div>
+                <div><label class="text-xs text-slate-400">Max site PAE</label>
+                    <input type="number" id="f-max-site-pae" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="50" step="1"></div>
+            </div>
+
+            <!-- Tools -->
+            <div>
+                <p class="text-xs text-slate-500 font-medium mb-1">Tools</p>
+                <div id="filter-tools" class="space-y-1"></div>
+                <div class="flex gap-2 mt-1">
+                    <button id="tools-all" type="button" class="text-xs text-blue-400 hover:text-blue-300">All</button>
+                    <button id="tools-none" type="button" class="text-xs text-blue-400 hover:text-blue-300">None</button>
+                </div>
+            </div>
+
+            <!-- SS bias -->
+            <div>
+                <p class="text-xs text-slate-500 font-medium mb-1">SS Bias</p>
+                <div class="space-y-1">
+                    <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                        <input type="radio" name="filter_ss" value="any" checked class="border-slate-600"> Any</label>
+                    <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                        <input type="radio" name="filter_ss" value="helix" class="border-slate-600"> Helix-rich (&gt;40%)</label>
+                    <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                        <input type="radio" name="filter_ss" value="sheet" class="border-slate-600"> Sheet-rich (&gt;30%)</label>
+                    <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
+                        <input type="radio" name="filter_ss" value="balanced" class="border-slate-600"> Balanced</label>
+                </div>
+            </div>
+
+            <button id="filter-reset" type="button" class="w-full bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-3 py-1 rounded">Reset All</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Jinja-injected constants
+    const JOB_ID = '{{ job.id }}';
+    const JOB_NAME = '{{ job.name }}';
+    const JOB_TOOLS = '{{ job.tools }}';
+    const JOB_MODE = '{{ job.mode }}';
+    const TOOL_COLORS = {{ tool_colors_json | safe }};
+    const SCATTER_PRESETS = {{ scatter_presets_json | safe }};
+    const HIGHER_BETTER = new Set({{ higher_better_json | safe }});
+    const LOWER_BETTER = new Set({{ lower_better_json | safe }});
+    const DEFAULT_COLUMNS = {{ default_columns_json | safe }};
+    const RADAR_AXES = {{ radar_axes_json | safe }};
+    const TOOL_METRICS = {{ tool_metrics_json | safe }};
+    const JOB_SITE = {{ (job.site or "") | tojson }};
+</script>
+<script src="/static/results.js?v=6"></script>
+<script src="/static/livererank.js?v=11"></script>
+{% endblock %}

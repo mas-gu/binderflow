@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% block title %}BinderFlow — Dashboard{% endblock %}
+
+{% block content %}
+<!-- GPU Status -->
+<section class="mb-8">
+    <h2 class="text-lg font-semibold text-slate-300 mb-3">GPU Status</h2>
+    <div id="gpu-cards" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {% for gpu in gpus %}
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+            <div class="flex justify-between items-center mb-2">
+                <span class="font-medium">GPU {{ gpu.index }}</span>
+                {% if gpu.busy %}
+                <span class="text-xs px-2 py-0.5 rounded bg-amber-900 text-amber-300">Busy</span>
+                {% else %}
+                <span class="text-xs px-2 py-0.5 rounded bg-green-900 text-green-300">Free</span>
+                {% endif %}
+            </div>
+            <p class="text-sm text-slate-400">{{ gpu.name }}</p>
+            <!-- VRAM bar -->
+            <div class="mt-2 bg-slate-800 rounded-full h-2.5">
+                {% set pct = (gpu.memory_used_mb / gpu.memory_total_mb * 100)|int if gpu.memory_total_mb else 0 %}
+                <div class="h-2.5 rounded-full {% if pct > 80 %}bg-red-500{% elif pct > 40 %}bg-amber-500{% else %}bg-green-500{% endif %}"
+                     style="width: {{ pct }}%"></div>
+            </div>
+            <p class="text-xs text-slate-500 mt-1">
+                {{ gpu.memory_used_mb }} / {{ gpu.memory_total_mb }} MB
+                &middot; {{ gpu.utilization_pct }}% util
+                &middot; {{ gpu.temperature }}&deg;C
+            </p>
+            {% if gpu.job_name %}
+            <p class="text-xs text-amber-400 mt-1">
+                Running: <a href="/monitor/{{ gpu.job_id }}" class="underline">{{ gpu.job_name }}</a>
+            </p>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<!-- Active Jobs -->
+{% set running_jobs = jobs | selectattr("status", "equalto", "running") | list %}
+{% if running_jobs %}
+<section class="mb-8">
+    <h2 class="text-lg font-semibold text-slate-300 mb-3">Active Jobs</h2>
+    <div class="space-y-3">
+        {% for job in running_jobs %}
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 flex justify-between items-center">
+            <div>
+                <a href="/monitor/{{ job.id }}" class="text-blue-400 hover:text-blue-300 font-medium">{{ job.name }}</a>
+                <p class="text-sm text-slate-400 mt-1">
+                    GPU {{ job.gpu_id }} &middot; {{ job.tools }} &middot; {{ job.mode }} mode
+                </p>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="animate-pulse text-xs px-2 py-0.5 rounded bg-blue-900 text-blue-300">Running</span>
+                <a href="/monitor/{{ job.id }}" class="text-sm text-slate-400 hover:text-white">Monitor &rarr;</a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<!-- Results — My Jobs / All Jobs with project navigation -->
+{% if projects_dict %}
+<section class="mb-8">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold text-slate-300">Results</h2>
+        <div class="flex gap-2">
+            <button id="show-my" class="view-toggle text-xs px-3 py-1 rounded bg-blue-700 text-white">My Jobs</button>
+            <button id="show-all" class="view-toggle text-xs px-3 py-1 rounded bg-slate-700 text-slate-300 hover:bg-slate-600">All Jobs</button>
+        </div>
+    </div>
+
+    <!-- Project selector tabs -->
+    <div id="project-tabs" class="flex gap-2 mb-4 flex-wrap">
+        <button class="project-tab text-xs px-3 py-1 rounded bg-blue-700 text-white" data-project="__all__">All projects</button>
+        {% for project in projects_dict.keys() %}
+        <button class="project-tab text-xs px-3 py-1 rounded bg-slate-700 text-slate-300 hover:bg-slate-600" data-project="{{ project }}">{{ project }}</button>
+        {% endfor %}
+    </div>
+
+    <!-- Job cards -->
+    <div id="results-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {% for project, project_jobs in projects_dict.items() %}
+        {% for job in project_jobs %}
+        <a href="/results/{{ job.id }}" class="result-card bg-slate-900 border border-slate-700 rounded-lg p-4 hover:border-green-700 transition-colors block"
+           data-username="{{ job.username or '' }}" data-project="{{ project }}">
+            <div class="flex justify-between items-start mb-2">
+                <span class="font-medium text-green-400">{{ job.name }}</span>
+                <span class="text-xs px-2 py-0.5 rounded bg-green-900 text-green-300">{{ job.job_type }}</span>
+            </div>
+            <p class="text-xs text-slate-400">{{ job.tools }}</p>
+            <div class="flex justify-between items-center mt-1">
+                <span class="text-xs text-blue-400">{{ project }}</span>
+                <div class="flex gap-2">
+                    <span class="text-xs text-slate-500">{{ job.mode }}</span>
+                    {% if job.machine %}
+                    <span class="text-xs text-slate-600" title="Machine">{{ job.machine }}</span>
+                    {% endif %}
+                    {% if job.username %}
+                    <span class="text-xs text-slate-600">{{ job.username }}</span>
+                    {% endif %}
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<!-- Recent Jobs -->
+<section>
+    <h2 class="text-lg font-semibold text-slate-300 mb-3">Recent Jobs</h2>
+    {% if jobs %}
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="text-slate-400 border-b border-slate-700">
+                <tr>
+                    <th class="text-left py-2 px-3">Name</th>
+                    <th class="text-left py-2 px-3">Project</th>
+                    <th class="text-left py-2 px-3">User</th>
+                    <th class="text-left py-2 px-3">Type</th>
+                    <th class="text-left py-2 px-3">Mode</th>
+                    <th class="text-left py-2 px-3">GPU</th>
+                    <th class="text-left py-2 px-3">Status</th>
+                    <th class="text-left py-2 px-3">Created</th>
+                    <th class="text-left py-2 px-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                <tr class="border-b border-slate-800 hover:bg-slate-900">
+                    <td class="py-2 px-3 font-medium max-w-[200px] truncate" title="{{ job.name }}">{{ job.name }}</td>
+                    <td class="py-2 px-3 text-blue-400 text-xs">{{ job.project or '' }}</td>
+                    <td class="py-2 px-3 text-slate-500 text-xs">{{ job.username or '' }}</td>
+                    <td class="py-2 px-3 text-slate-400">{{ job.job_type }}</td>
+                    <td class="py-2 px-3 text-slate-400">{{ job.mode }}</td>
+                    <td class="py-2 px-3 text-slate-400">{{ job.gpu_id }}</td>
+                    <td class="py-2 px-3">
+                        {% if job.status == 'completed' %}
+                        <a href="/results/{{ job.id }}" class="text-xs px-2 py-0.5 rounded bg-green-900 text-green-300 hover:bg-green-800 cursor-pointer">Completed</a>
+                        {% elif job.status == 'running' %}
+                        <span class="text-xs px-2 py-0.5 rounded bg-blue-900 text-blue-300">Running</span>
+                        {% elif job.status == 'failed' %}
+                        <span class="text-xs px-2 py-0.5 rounded bg-red-900 text-red-300">Failed</span>
+                        {% elif job.status == 'cancelled' %}
+                        <span class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-300">Cancelled</span>
+                        {% else %}
+                        <span class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400">{{ job.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2 px-3 text-slate-500" data-timestamp="{{ job.created_at }}"></td>
+                    <td class="py-2 px-3 flex gap-2">
+                        {% if job.status == 'running' %}
+                        <a href="/monitor/{{ job.id }}" class="text-blue-400 hover:text-blue-300">Monitor</a>
+                        {% elif job.status == 'completed' %}
+                        <a href="/results/{{ job.id }}" class="text-green-400 hover:text-green-300">Results</a>
+                        {% else %}
+                        <a href="/monitor/{{ job.id }}" class="text-slate-400 hover:text-slate-300">Log</a>
+                        {% endif %}
+                        <button onclick="archiveJob('{{ job.id }}', this)" class="text-slate-600 hover:text-red-400 text-xs" title="Hide from list">x</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-8 text-center">
+        <p class="text-slate-400 mb-4">No jobs yet. Launch your first binder design run.</p>
+        <a href="/launch" class="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded font-medium">New Job</a>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Format timestamps
+    document.querySelectorAll('[data-timestamp]').forEach(el => {
+        const ts = parseFloat(el.dataset.timestamp);
+        if (ts) el.textContent = new Date(ts * 1000).toLocaleString();
+    });
+    // Results filtering state
+    const currentUser = '{{ username }}';
+    let showMyOnly = true;
+    let activeProject = '__all__';
+
+    function filterResults() {
+        document.querySelectorAll('.result-card').forEach(card => {
+            let show = true;
+            if (showMyOnly && card.dataset.username !== currentUser) show = false;
+            if (activeProject !== '__all__' && card.dataset.project !== activeProject) show = false;
+            card.style.display = show ? '' : 'none';
+        });
+    }
+
+    function setActiveBtn(group, activeBtn) {
+        document.querySelectorAll(group).forEach(b => {
+            b.classList.remove('bg-blue-700', 'text-white');
+            b.classList.add('bg-slate-700', 'text-slate-300');
+        });
+        activeBtn.classList.remove('bg-slate-700', 'text-slate-300');
+        activeBtn.classList.add('bg-blue-700', 'text-white');
+    }
+
+    // My / All toggle
+    document.getElementById('show-my')?.addEventListener('click', function() {
+        showMyOnly = true; setActiveBtn('.view-toggle', this); filterResults();
+    });
+    document.getElementById('show-all')?.addEventListener('click', function() {
+        showMyOnly = false; setActiveBtn('.view-toggle', this); filterResults();
+    });
+
+    // Project tabs
+    document.querySelectorAll('.project-tab').forEach(btn => {
+        btn.addEventListener('click', function() {
+            activeProject = this.dataset.project;
+            setActiveBtn('.project-tab', this);
+            filterResults();
+        });
+    });
+
+    // Initial filter
+    filterResults();
+
+    // Archive (hide) a job
+    async function archiveJob(jobId, btn) {
+        if (!confirm('Hide this job from the list?')) return;
+        await fetch('/api/jobs/' + jobId + '/archive', { method: 'POST' });
+        btn.closest('tr').remove();
+    }
+
+    // Auto-refresh GPU status every 15s
+    setInterval(async () => {
+        try {
+            const resp = await fetch('/api/gpus');
+            const gpus = await resp.json();
+        } catch(e) {}
+    }, 15000);
+</script>
+{% endblock %}

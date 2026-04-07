@@ -175,6 +175,11 @@ class MainWindow(QMainWindow):
         df = self._full_df.copy()
         mask = pd.Series(True, index=df.index)
 
+        # Unranked filter
+        if not filters.get("include_unranked", False):
+            if "rank" in df.columns:
+                mask &= df["rank"].notna()
+
         # Score thresholds (NaN values pass when filter is at default/floor)
         if "combined_score" in df.columns and filters["min_combined"] > -10:
             mask &= df["combined_score"].fillna(-999) >= filters["min_combined"]
@@ -186,6 +191,22 @@ class MainWindow(QMainWindow):
             mask &= df["rosetta_dG"].fillna(999) <= filters["max_dg"]
         if "boltz_site_mean_pae" in df.columns and filters["max_site_pae"] < 50:
             mask &= df["boltz_site_mean_pae"].fillna(999) <= filters["max_site_pae"]
+
+        # Geometric filters
+        if "refolding_rmsd" in df.columns and filters.get("max_rmsd", 20) < 20:
+            mask &= df["refolding_rmsd"].fillna(999) <= filters["max_rmsd"]
+        if "site_interface_fraction" in df.columns and filters.get("min_sif", 0) > 0:
+            mask &= df["site_interface_fraction"].fillna(-1) >= filters["min_sif"]
+        if "interface_KE_fraction" in df.columns and filters.get("max_ke", 1) < 1:
+            mask &= df["interface_KE_fraction"].fillna(999) <= filters["max_ke"]
+        if filters.get("no_cys", False) and "binder_sequence" in df.columns:
+            mask &= ~df["binder_sequence"].fillna("").str.contains("C")
+        if filters.get("max_aa", 1) < 1 and "binder_sequence" in df.columns:
+            def _max_aa_frac(seq):
+                if not seq or len(seq) == 0:
+                    return 0
+                return max(seq.count(aa) / len(seq) for aa in set(seq))
+            mask &= df["binder_sequence"].fillna("").apply(_max_aa_frac) <= filters["max_aa"]
 
         # Tool filter
         if "tool" in df.columns:
