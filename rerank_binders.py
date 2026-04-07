@@ -643,16 +643,8 @@ def load_existing_esmfold(designs, val_dir):
             loaded += 1
             continue
 
-        # If ESMFold dir exists and has PDBs for the same tool but NOT this
-        # design, infer it was tested and failed (no PDB = pLDDT below threshold)
-        if esm_dir and esm_dir.exists():
-            tool_name = _get_tool_from_design_id(did)
-            # Check if any design from same tool has a PDB (tool was processed)
-            tool_pdbs = list(esm_dir.glob(f"{tool_name}_*.pdb"))
-            if tool_pdbs:
-                # This tool was processed but this design has no PDB → failed
-                d["esmfold_plddt"] = 0.0  # mark as failed
-                loaded += 1
+        # Design has no ESMFold result — leave esmfold_plddt unset so the
+        # pipeline knows it needs to be run (don't assume 0.0 = failed)
 
     return loaded
 
@@ -1131,11 +1123,14 @@ def main():
     n_esm = n_boltz = n_rosetta = 0
     for rd in results_dirs:
         rd_val = rd / "validation"
-        n_esm += load_existing_esmfold(all_designs, rd_val)
-        n_boltz += load_existing_boltz(all_designs, rd_val, site_row_indices=site_row_indices)
-        n_rosetta += load_existing_rosetta(all_designs, rd_val)
-    # Also load from out_dir/validation if different from results_dirs
-    if out_dir not in results_dirs and val_dir.exists():
+        if not args.reprediction:
+            # rank_only: load cached scores from results_dir
+            n_esm += load_existing_esmfold(all_designs, rd_val)
+            n_boltz += load_existing_boltz(all_designs, rd_val, site_row_indices=site_row_indices)
+            n_rosetta += load_existing_rosetta(all_designs, rd_val)
+
+    # Load from out_dir/validation (own cache — used for both modes)
+    if val_dir.exists():
         n_esm += load_existing_esmfold(all_designs, val_dir)
         n_boltz += load_existing_boltz(all_designs, val_dir, site_row_indices=site_row_indices)
         n_rosetta += load_existing_rosetta(all_designs, val_dir)
@@ -1145,6 +1140,8 @@ def main():
         if n_esm:     log(f"  ESMFold: {n_esm}/{len(all_designs)} designs")
         if n_boltz:   log(f"  Boltz-2: {n_boltz}/{len(all_designs)} designs")
         if n_rosetta: log(f"  Rosetta: {n_rosetta}/{len(all_designs)} designs")
+    if args.reprediction:
+        log(f"  (reprediction mode: only using own out_dir cache, ignoring results_dir scores)")
 
     # ── Validation ─────────────────────────────────────────────────────────
     # Stage 1: ESMFold

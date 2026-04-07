@@ -31,6 +31,11 @@ class FilterPanel(QWidget):
         header.setFont(QFont("", 11, QFont.Weight.Bold))
         layout.addWidget(header)
 
+        self.include_unranked = QCheckBox("Include unranked designs")
+        self.include_unranked.setChecked(False)
+        self.include_unranked.stateChanged.connect(lambda _: self._emit_filters())
+        layout.addWidget(self.include_unranked)
+
         # Score filters
         score_group = QGroupBox("Score Thresholds")
         sg = QGridLayout()
@@ -82,6 +87,48 @@ class FilterPanel(QWidget):
 
         score_group.setLayout(sg)
         layout.addWidget(score_group)
+
+        # Geometric filters
+        geo_group = QGroupBox("Geometric Filters")
+        gl = QGridLayout()
+
+        gl.addWidget(QLabel("Max refolding RMSD:"), 0, 0)
+        self.max_rmsd = QDoubleSpinBox()
+        self.max_rmsd.setRange(0, 20)
+        self.max_rmsd.setValue(20.0)
+        self.max_rmsd.setSingleStep(0.5)
+        self.max_rmsd.setDecimals(1)
+        gl.addWidget(self.max_rmsd, 0, 1)
+
+        gl.addWidget(QLabel("Min SIF:"), 1, 0)
+        self.min_sif = QDoubleSpinBox()
+        self.min_sif.setRange(0, 1)
+        self.min_sif.setValue(0.0)
+        self.min_sif.setSingleStep(0.05)
+        self.min_sif.setDecimals(2)
+        gl.addWidget(self.min_sif, 1, 1)
+
+        gl.addWidget(QLabel("Max interface KE:"), 2, 0)
+        self.max_ke = QDoubleSpinBox()
+        self.max_ke.setRange(0, 1)
+        self.max_ke.setValue(1.0)
+        self.max_ke.setSingleStep(0.05)
+        self.max_ke.setDecimals(2)
+        gl.addWidget(self.max_ke, 2, 1)
+
+        gl.addWidget(QLabel("Max AA fraction:"), 3, 0)
+        self.max_aa = QDoubleSpinBox()
+        self.max_aa.setRange(0, 1)
+        self.max_aa.setValue(1.0)
+        self.max_aa.setSingleStep(0.05)
+        self.max_aa.setDecimals(2)
+        gl.addWidget(self.max_aa, 3, 1)
+
+        self.no_cys = QCheckBox("No cysteine")
+        gl.addWidget(self.no_cys, 4, 0, 1, 2)
+
+        geo_group.setLayout(gl)
+        layout.addWidget(geo_group)
 
         # Tool filter
         tool_group = QGroupBox("Tools")
@@ -150,11 +197,17 @@ class FilterPanel(QWidget):
             cb.setChecked(checked)
 
     def _reset(self):
+        self.include_unranked.setChecked(False)
         self.min_combined.setValue(-10.0)
         self.min_iptm.setValue(0.0)
         self.min_plddt.setValue(0.0)
         self.max_dg.setValue(100.0)
         self.max_site_pae.setValue(50.0)
+        self.max_rmsd.setValue(20.0)
+        self.min_sif.setValue(0.0)
+        self.max_ke.setValue(1.0)
+        self.max_aa.setValue(1.0)
+        self.no_cys.setChecked(False)
         self._set_all_tools(True)
         self.ss_any.setChecked(True)
         self._emit_filters()
@@ -167,11 +220,17 @@ class FilterPanel(QWidget):
         ss_bias = {0: "any", 1: "helix", 2: "sheet", 3: "balanced"}.get(ss_id, "any")
 
         filters = {
+            "include_unranked": self.include_unranked.isChecked(),
             "min_combined": self.min_combined.value(),
             "min_iptm": self.min_iptm.value(),
             "min_plddt": self.min_plddt.value(),
             "max_dg": self.max_dg.value(),
             "max_site_pae": self.max_site_pae.value(),
+            "max_rmsd": self.max_rmsd.value(),
+            "min_sif": self.min_sif.value(),
+            "max_ke": self.max_ke.value(),
+            "max_aa": self.max_aa.value(),
+            "no_cys": self.no_cys.isChecked(),
             "active_tools": active_tools,
             "ss_bias": ss_bias,
         }
@@ -185,11 +244,17 @@ class FilterPanel(QWidget):
         ss_id = self.ss_button_group.checkedId()
         ss_bias = {0: "any", 1: "helix", 2: "sheet", 3: "balanced"}.get(ss_id, "any")
         return {
+            "include_unranked": self.include_unranked.isChecked(),
             "min_combined": self.min_combined.value(),
             "min_iptm": self.min_iptm.value(),
             "min_plddt": self.min_plddt.value(),
             "max_dg": self.max_dg.value(),
             "max_site_pae": self.max_site_pae.value(),
+            "max_rmsd": self.max_rmsd.value(),
+            "min_sif": self.min_sif.value(),
+            "max_ke": self.max_ke.value(),
+            "max_aa": self.max_aa.value(),
+            "no_cys": self.no_cys.isChecked(),
             "active_tools": active_tools,
             "ss_bias": ss_bias,
         }

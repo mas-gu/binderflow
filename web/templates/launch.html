@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+{% block title %}BinderFlow — Launch Job{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Launch Binder Design</h1>
+
+<form id="launch-form" class="space-y-6" enctype="multipart/form-data">
+    <!-- Section 1: Target & Basic Settings -->
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+        <h2 class="text-lg font-semibold mb-4 text-slate-200">Target & Site</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Job Name</label>
+                <input type="text" name="job_name" required
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="pdia6_bip_test">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Project</label>
+                <div class="flex gap-2">
+                    <select name="project" id="project-select"
+                            class="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
+                        <option value="">-- Select or create --</option>
+                        {% for p in projects %}
+                        <option value="{{ p }}">{{ p }}</option>
+                        {% endfor %}
+                        <option value="__new__">+ New project...</option>
+                    </select>
+                    <input type="text" id="project-new" name="project_new" placeholder="New project name"
+                           class="hidden flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">GPU</label>
+                <select name="gpu_id" required
+                        class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
+                    {% for gpu in gpus %}
+                    <option value="{{ gpu.index }}">
+                        GPU {{ gpu.index }}: {{ gpu.name }}
+                        ({{ gpu.memory_used_mb }}/{{ gpu.memory_total_mb }} MB){% if gpu.busy %} — IN USE{% endif %}
+                        {% if gpu.busy %} — BUSY: {{ gpu.job_name }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Target PDB (upload)</label>
+                <div id="drop-zone" class="border-2 border-dashed border-slate-600 rounded-lg p-4 text-center hover:border-blue-500 cursor-pointer transition-colors">
+                    <input type="file" name="target" accept=".pdb,.cif" class="hidden" id="file-input">
+                    <p class="text-sm text-slate-400" id="drop-text">Drop PDB/CIF here or click to browse</p>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Or: Target path on server</label>
+                <input type="text" name="target_path"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="/path/to/target.pdb">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Binding Site</label>
+                <input type="text" name="site" required
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="A:373-374,379-384">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Binder Length</label>
+                <input type="text" name="length" value="{{ default_length }}"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="60-80">
+            </div>
+        </div>
+    </div>
+
+    <!-- Section 2: Tools & Mode -->
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+        <h2 class="text-lg font-semibold mb-4 text-slate-200">Pipeline Settings</h2>
+
+        <!-- Tools -->
+        <div class="mb-4">
+            <label class="block text-sm text-slate-400 mb-2">Design Tools</label>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                {% for tool in default_tools %}
+                <label class="flex items-center gap-2 bg-slate-800 rounded p-2 cursor-pointer hover:bg-slate-750">
+                    <input type="checkbox" name="tool_{{ tool }}" value="{{ tool }}" checked
+                           class="rounded border-slate-600">
+                    <span class="inline-block w-3 h-3 rounded-full" style="background: {{ tool_colors[tool] }}"></span>
+                    <span class="text-sm">{{ tool }}</span>
+                    <span class="text-xs text-slate-500 ml-auto">{{ tool_descriptions[tool] }}</span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <!-- Mode -->
+            <div>
+                <label class="block text-sm text-slate-400 mb-2">Mode</label>
+                <div class="space-y-1">
+                    {% for m in ['test', 'standard', 'production'] %}
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="mode" value="{{ m }}"
+                               {% if m == default_mode %}checked{% endif %}
+                               class="border-slate-600">
+                        <span class="text-sm">{{ m }}</span>
+                        <span class="text-xs text-slate-500 ml-auto">{{ mode_estimates[m] }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- SS Bias -->
+            <div>
+                <label class="block text-sm text-slate-400 mb-2">SS Bias</label>
+                <div class="space-y-1">
+                    {% for b in ['balanced', 'helix', 'beta'] %}
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="ss_bias" value="{{ b }}"
+                               {% if b == default_ss_bias %}checked{% endif %}
+                               class="border-slate-600">
+                        <span class="text-sm">{{ b }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Quick options -->
+            <div>
+                <label class="block text-sm text-slate-400 mb-2">Options</label>
+                <div class="space-y-1">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="reprediction" class="border-slate-600">
+                        <span class="text-sm">Reprediction (Boltz-2 all tools)</span>
+                    </label>
+                    <!-- no_cys is rerank-only, not here -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm">Score weights:</label>
+                        <input type="text" name="score_weights" value="{{ default_score_weights }}"
+                               class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm w-28">
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm">PLIP top:</label>
+                        <input type="number" name="plip_top" value="10"
+                               class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm w-16">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Designs per tool/mode table -->
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+        <h3 class="text-sm font-medium text-slate-400 mb-2">Designs per tool &amp; mode</h3>
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs text-center">
+                <thead class="text-slate-500 border-b border-slate-700">
+                    <tr>
+                        <th class="text-left py-1 px-2">Tool</th>
+                        <th class="py-1 px-2">test</th>
+                        <th class="py-1 px-2">standard</th>
+                        <th class="py-1 px-2">production</th>
+                    </tr>
+                </thead>
+                <tbody class="text-slate-300" id="designs-table">
+                    <tr><td class="text-left py-1 px-2" style="color:#E53935">RFdiffusion</td><td>20</td><td>200</td><td>500</td></tr>
+                    <tr><td class="text-left py-1 px-2" style="color:#00BCD4">RFdiffusion3</td><td>20 (×4)</td><td>100 (×4)</td><td>250 (×4)</td></tr>
+                    <tr><td class="text-left py-1 px-2" style="color:#43A047">BoltzGen</td><td>50</td><td>500</td><td>2,000</td></tr>
+                    <tr id="bc-row"><td class="text-left py-1 px-2" style="color:#1E88E5">BindCraft</td><td id="bc-test">5</td><td id="bc-std">10</td><td id="bc-prod">20</td></tr>
+                    <tr><td class="text-left py-1 px-2" style="color:#FB8C00">PXDesign</td><td>20</td><td>200</td><td>500</td></tr>
+                    <tr><td class="text-left py-1 px-2" style="color:#8E24AA">Proteina</td><td>20</td><td>200</td><td>500</td></tr>
+                    <tr><td class="text-left py-1 px-2" style="color:#00897B">Proteina Complexa</td><td>20</td><td>200</td><td>500</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <p id="bc-note" class="text-xs text-slate-600 mt-1 hidden">* BindCraft count reduced (filters active)</p>
+    </div>
+
+    <!-- Section 3: Generate-only advanced options -->
+    <details class="bg-slate-900 border border-slate-700 rounded-lg">
+        <summary class="p-4 cursor-pointer text-slate-300 hover:text-white font-medium">
+            Advanced Options (generate)
+        </summary>
+        <div class="px-6 pb-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">ESMFold pLDDT threshold</label>
+                <input type="number" name="esmfold_plddt_threshold" step="1" placeholder="80"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">Max site dist (A)</label>
+                <input type="number" name="max_site_dist" step="0.5" placeholder="15.0"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">Min site fraction</label>
+                <input type="number" name="min_site_fraction" step="0.1" placeholder="0.0"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">Filter site PAE</label>
+                <input type="number" name="filter_site_pae" step="1" placeholder="15.0"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">Top N designs</label>
+                <input type="number" name="top_n" value="50"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">BindCraft filters</label>
+                <select name="bindcraft_filters" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                    <option value="no_filters" selected>no_filters (accept all — default)</option>
+                    <option value="relaxed">relaxed (light quality gate)</option>
+                    <option value="kras_relaxed">kras_relaxed (very relaxed)</option>
+                    <option value="default">default (strict — may stall)</option>
+                    <option value="peptide">peptide (for peptide binders)</option>
+                    <option value="peptide_relaxed">peptide_relaxed (relaxed peptide)</option>
+                </select>
+            </div>
+        </div>
+    </details>
+
+    <!-- Launch Button -->
+    <div class="flex gap-3">
+        <button type="submit" id="launch-btn"
+                class="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-lg font-semibold text-lg transition-colors">
+            Launch Pipeline
+        </button>
+        <button type="button" id="dryrun-btn"
+                class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-6 py-3 rounded-lg font-medium transition-colors">
+            Dry Run (show command)
+        </button>
+    </div>
+
+    <!-- Dry run output -->
+    <pre id="dryrun-output" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4 text-xs text-green-400 overflow-x-auto whitespace-pre-wrap"></pre>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Drag-drop file upload
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const dropText = document.getElementById('drop-text');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('border-blue-500'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('border-blue-500');
+        if (e.dataTransfer.files.length) {
+            fileInput.files = e.dataTransfer.files;
+            dropText.textContent = e.dataTransfer.files[0].name;
+        }
+    });
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) dropText.textContent = fileInput.files[0].name;
+    });
+
+    // BindCraft count update based on filter selection
+    function updateBindCraftCounts() {
+        const bcFilter = document.querySelector('select[name="bindcraft_filters"]');
+        if (!bcFilter) return;
+        const active = bcFilter.value && bcFilter.value !== 'no_filters';
+        document.getElementById('bc-test').textContent = active ? '2 *' : '5';
+        document.getElementById('bc-std').textContent = active ? '4 *' : '10';
+        document.getElementById('bc-prod').textContent = active ? '10 *' : '20';
+        document.getElementById('bc-note').classList.toggle('hidden', !active);
+    }
+    document.querySelector('select[name="bindcraft_filters"]')?.addEventListener('change', updateBindCraftCounts);
+    updateBindCraftCounts();
+
+    // Project selector toggle
+    const projectSelect = document.getElementById('project-select');
+    const projectNew = document.getElementById('project-new');
+    projectSelect.addEventListener('change', () => {
+        if (projectSelect.value === '__new__') {
+            projectNew.classList.remove('hidden');
+            projectNew.focus();
+        } else {
+            projectNew.classList.add('hidden');
+        }
+    });
+
+    // Form submission
+    document.getElementById('launch-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('launch-btn');
+        btn.disabled = true;
+        btn.textContent = 'Launching...';
+
+        const form = e.target;
+        const formData = new FormData();
+
+        // Project
+        let project = projectSelect.value;
+        if (project === '__new__') project = projectNew.value.trim();
+        if (!project) { alert('Please select or create a project'); btn.disabled = false; btn.textContent = 'Launch'; return; }
+        formData.append('project', project);
+
+        // Collect basic fields
+        formData.append('job_name', form.job_name.value);
+        formData.append('gpu_id', form.gpu_id.value);
+        formData.append('site', form.site.value);
+        formData.append('length', form.length.value);
+        formData.append('mode', form.querySelector('input[name="mode"]:checked').value);
+        formData.append('ss_bias', form.querySelector('input[name="ss_bias"]:checked').value);
+        formData.append('score_weights', form.score_weights.value);
+        formData.append('plip_top', form.plip_top.value);
+        formData.append('top_n', form.top_n.value);
+        formData.append('reprediction', form.reprediction.checked);
+
+        // Tools
+        const tools = [];
+        document.querySelectorAll('input[name^="tool_"]:checked').forEach(cb => tools.push(cb.value));
+        formData.append('tools', tools.join(','));
+
+        // File or path
+        if (fileInput.files.length) {
+            formData.append('target', fileInput.files[0]);
+        }
+        formData.append('target_path', form.target_path.value);
+
+        // BindCraft filters
+        formData.append('bindcraft_filters', form.bindcraft_filters.value);
+
+        // Advanced options (generate-only, no rerank filters)
+        ['max_site_dist', 'min_site_fraction', 'filter_site_pae', 'esmfold_plddt_threshold'].forEach(field => {
+            const val = form[field]?.value;
+            if (val) formData.append(field, val);
+        });
+
+        try {
+            const resp = await fetch('/api/jobs', { method: 'POST', body: formData });
+            const data = await resp.json();
+            if (resp.ok) {
+                window.location.href = '/monitor/' + data.job_id;
+            } else {
+                alert('Error: ' + (data.detail || JSON.stringify(data)));
+                btn.disabled = false;
+                btn.textContent = 'Launch Pipeline';
+            }
+        } catch (err) {
+            alert('Network error: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = 'Launch Pipeline';
+        }
+    });
+
+    // Dry run
+    document.getElementById('dryrun-btn').addEventListener('click', () => {
+        const form = document.getElementById('launch-form');
+        const parts = ['python generate_binders.py'];
+        parts.push('--target ' + (form.target_path.value || '<uploaded.pdb>'));
+        parts.push('--site "' + form.site.value + '"');
+        parts.push('--length ' + form.length.value);
+
+        const tools = [];
+        document.querySelectorAll('input[name^="tool_"]:checked').forEach(cb => tools.push(cb.value));
+        parts.push('--tools ' + tools.join(','));
+        parts.push('--mode ' + form.querySelector('input[name="mode"]:checked').value);
+        parts.push('--device cuda:' + form.gpu_id.value);
+        parts.push('--score_weights ' + form.score_weights.value);
+        parts.push('--ss_bias ' + form.querySelector('input[name="ss_bias"]:checked').value);
+
+        if (form.reprediction.checked) parts.push('--reprediction');
+        if (form.plip_top.value) parts.push('--plip_top ' + form.plip_top.value);
+
+        ['max_site_dist', 'min_site_fraction', 'filter_site_pae', 'esmfold_plddt_threshold'].forEach(f => {
+            const val = form[f]?.value;
+            if (val) parts.push('--' + f + ' ' + val);
+        });
+        const bcf = form.bindcraft_filters.value;
+        if (bcf && bcf !== 'no_filters') parts.push('--bindcraft_filters ' + bcf);
+
+        const out = document.getElementById('dryrun-output');
+        out.textContent = 'CUDA_VISIBLE_DEVICES=' + form.gpu_id.value + ' \\\n  ' + parts.join(' \\\n  ');
+        out.classList.remove('hidden');
+    });
+</script>
+{% endblock %}

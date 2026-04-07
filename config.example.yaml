@@ -1,0 +1,50 @@
+# BinderFlow Configuration
+# Copy this file to config.yaml and adjust paths for your system.
+#
+# Priority: environment variables > config.yaml > defaults below
+# All paths support ~ for home directory expansion.
+
+# ──────────────────────────────────────────────────────────────────
+# Base directories
+# ──────────────────────────────────────────────────────────────────
+software_dir: ~/software                 # Tool source code repos
+weights_dir: ~/weights                   # Model checkpoints
+
+# ──────────────────────────────────────────────────────────────────
+# Tool installations (repos / source directories)
+# ──────────────────────────────────────────────────────────────────
+tools:
+  rfdiffusion_dir: ${software_dir}/RFdiffusion
+  rfdiffusion_ckpt: ${weights_dir}/rfdiffusion/Complex_base_ckpt.pt
+  ligandmpnn_dir: ${software_dir}/LigandMPNN
+  ligandmpnn_ckpt: ${weights_dir}/ligandmpnn/proteinmpnn_v_48_020.pt
+  bindcraft_dir: ${software_dir}/BindCraft
+  pxdesign_dir: ${software_dir}/PXDesign
+  proteina_dir: ${software_dir}/Proteina
+  proteina_ckpt: ${weights_dir}/proteina/proteina_v1.1_DFS_200M_tri.ckpt
+  proteina_complexa_dir: ${software_dir}/Proteina-Complexa
+  proteina_complexa_venv: ${software_dir}/Proteina-Complexa/.venv
+  rfd3_weights: ${weights_dir}/foundry
+
+# ──────────────────────────────────────────────────────────────────
+# Conda environments
+# Use env name (resolved via `conda run -n NAME`) or absolute prefix
+# path (resolved via `conda run -p PATH`).
+# ──────────────────────────────────────────────────────────────────
+conda_envs:
+  rfdiffusion: rfdiffusion               # backbone diffusion
+  mpnn: mpnn                             # LigandMPNN / ProteinMPNN
+  boltzgen: boltzgen                     # BoltzGen (prefix env)
+  bindcraft: BindCraft                   # BindCraft (capital B, C)
+  pxdesign: pxdesign                     # PXDesign
+  proteina: proteina_env                 # Proteina (prefix env)
+  esmfold: esmfold                       # ESMFold validation
+  boltz: boltz                           # Boltz-2 validation (host env)
+  rfdiffusion3: rfdiffusion3             # RFdiffusion3 (Foundry)
+
+# ──────────────────────────────────────────────────────────────────
+# Web server
+# ──────────────────────────────────────────────────────────────────
+web:
+  outputs_dir: ./outputs                 # Job output base directory
+  shared_data_dir: ./data                # SQLite DBs, uploads, shared.json

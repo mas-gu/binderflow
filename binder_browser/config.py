@@ -4,6 +4,7 @@ from PyQt6.QtCore import QSettings
 
 TOOL_COLORS = {
     "rfdiffusion": "#E53935",
+    "rfdiffusion3": "#00BCD4",
     "boltzgen": "#43A047",
     "bindcraft": "#1E88E5",
     "pxdesign": "#FB8C00",
@@ -14,6 +15,7 @@ TOOL_COLORS = {
 # Map design_id prefix to tool name
 TOOL_PREFIXES = {
     "rfd_": "rfdiffusion",
+    "rfdiffusion3_": "rfdiffusion3",
     "rfdiffusion_": "rfdiffusion",
     "bg_": "boltzgen",
     "boltzgen_": "boltzgen",
@@ -58,8 +60,8 @@ SCATTER_PRESETS = {
     # Binding quality
     "iPTM vs Rosetta dG": ("boltz_iptm", "rosetta_dG"),
     "iPTM vs Site PAE": ("boltz_iptm", "boltz_site_mean_pae"),
+    "iPTM vs Interface PAE": ("boltz_iptm", "boltz_mean_interface_pae"),
     "iPTM vs Binder pLDDT": ("boltz_iptm", "boltz_binder_plddt"),
-    "iPTM vs pDockQ": ("boltz_iptm", "pDockQ"),
     # Structure quality
     "ESMFold pLDDT vs Combined Score": ("esmfold_plddt", "combined_score"),
     "Combined Score vs Rosetta dG": ("combined_score", "rosetta_dG"),
@@ -74,6 +76,8 @@ SCATTER_PRESETS = {
     "Helix Fraction vs iPTM": ("binder_helix_frac", "boltz_iptm"),
     "Interface KE vs iPTM": ("interface_KE_fraction", "boltz_iptm"),
     "Shape Complementarity vs iPTM": ("rosetta_sc", "boltz_iptm"),
+    "SAP vs iPTM": ("rosetta_sap", "boltz_iptm"),
+    "Solubility vs iPTM": ("netsolp_solubility", "boltz_iptm"),
 }
 
 

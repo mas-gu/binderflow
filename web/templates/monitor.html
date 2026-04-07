@@ -1,0 +1,319 @@
+{% extends "base.html" %}
+{% block title %}BinderFlow — Monitor: {{ job.name }}{% endblock %}
+
+{% block content %}
+<!-- Job Header -->
+<div class="flex justify-between items-center mb-6">
+    <div>
+        <h1 class="text-2xl font-bold">{{ job.name }}</h1>
+        <p class="text-sm text-slate-400 mt-1">
+            GPU {{ job.gpu_id }} &middot; {{ job.tools }} &middot; {{ job.mode }} mode
+            &middot; Job ID: {{ job.id }}
+        </p>
+    </div>
+    <div class="flex items-center gap-3">
+        <span id="status-badge" class="text-sm px-3 py-1 rounded
+            {% if job.status == 'running' %}bg-blue-900 text-blue-300 animate-pulse
+            {% elif job.status == 'completed' %}bg-green-900 text-green-300
+            {% elif job.status == 'failed' %}bg-red-900 text-red-300
+            {% else %}bg-slate-700 text-slate-300{% endif %}">
+            {{ job.status }}
+        </span>
+        {% if job.status == 'running' %}
+        <button id="cancel-btn" onclick="cancelJob()"
+                class="bg-red-700 hover:bg-red-600 text-white px-4 py-1 rounded text-sm">
+            Cancel
+        </button>
+        {% endif %}
+        <a id="results-link" href="/results/{{ job.id }}"
+           class="{% if job.status != 'completed' %}hidden{% endif %} bg-green-700 hover:bg-green-600 text-white px-4 py-1 rounded text-sm">
+            View Results
+        </a>
+    </div>
+</div>
+
+<!-- Progress Sidebar + Log -->
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+    <!-- Progress sidebar -->
+    <div class="lg:col-span-1 space-y-3">
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-slate-300 mb-2">Current Step</h3>
+            <p id="current-step" class="text-lg font-medium text-blue-400">Starting...</p>
+        </div>
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-slate-300 mb-3">Tool Progress</h3>
+            <div id="tool-progress" class="space-y-2">
+                {% for tool in (job.tools or '').split(',') %}
+                {% if tool %}
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full" style="background: {{ tool_colors.get(tool, '#666') }}"></span>
+                    <span class="text-xs text-slate-400 flex-1">{{ tool }}</span>
+                    <span class="text-xs text-slate-500" id="progress-{{ tool }}">pending</span>
+                    <button class="skip-btn hidden text-xs bg-amber-800 hover:bg-amber-700 text-amber-200 px-1.5 py-0.5 rounded"
+                            data-tool="{{ tool }}" title="Skip this tool and collect partial output">Skip</button>
+                </div>
+                {% endif %}
+                {% endfor %}
+                <div class="border-t border-slate-800 pt-2 mt-2">
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-cyan-600"></span>
+                        <span class="text-xs text-slate-400 flex-1">ESMFold</span>
+                        <span class="text-xs text-slate-500" id="progress-esmfold">—</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-indigo-600"></span>
+                        <span class="text-xs text-slate-400 flex-1">Boltz-2</span>
+                        <span class="text-xs text-slate-500" id="progress-boltz">—</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-orange-600"></span>
+                        <span class="text-xs text-slate-400 flex-1">Rosetta</span>
+                        <span class="text-xs text-slate-500" id="progress-rosetta">—</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-slate-300 mb-2">Stats</h3>
+            <div class="text-sm space-y-1">
+                <div class="flex justify-between">
+                    <span class="text-slate-400">Elapsed:</span>
+                    <span id="elapsed" class="text-slate-200">--</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-slate-400">Designs:</span>
+                    <span id="design-count" class="text-slate-200">--</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-slate-400">ESMFold pass:</span>
+                    <span id="esmfold-pass" class="text-slate-200">--</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log terminal -->
+    <div class="lg:col-span-3">
+        <div class="bg-slate-950 border border-slate-700 rounded-lg p-1">
+            <div class="flex justify-between items-center px-3 py-1 border-b border-slate-800">
+                <span class="text-xs text-slate-500">Live Log</span>
+                <label class="flex items-center gap-1 text-xs text-slate-500 cursor-pointer">
+                    <input type="checkbox" id="autoscroll" checked class="rounded border-slate-600">
+                    Auto-scroll
+                </label>
+            </div>
+            <pre id="log-output" class="p-3 text-xs font-mono text-slate-300 overflow-auto max-h-[70vh] min-h-[50vh]"></pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const jobId = '{{ job.id }}';
+    const logEl = document.getElementById('log-output');
+    const stepEl = document.getElementById('current-step');
+    const startTime = {{ job.started_at or job.created_at or 0 }};
+
+    // Elapsed time counter
+    const elapsedEl = document.getElementById('elapsed');
+    setInterval(() => {
+        if (startTime) {
+            const secs = Math.floor(Date.now()/1000 - startTime);
+            const h = Math.floor(secs/3600), m = Math.floor((secs%3600)/60), s = secs%60;
+            elapsedEl.textContent = `${h}h ${m}m ${s}s`;
+        }
+    }, 1000);
+
+    // SSE log stream
+    const evtSource = new EventSource('/api/stream/' + jobId);
+
+    evtSource.onmessage = (event) => {
+        const line = event.data;
+        const span = document.createElement('span');
+        span.textContent = line + '\n';
+
+        // Color tool steps
+        if (line.includes('STEP:')) {
+            span.className = 'text-blue-400 font-bold';
+            const match = line.match(/STEP:\s+(\S+)/);
+            if (match) {
+                stepEl.textContent = match[1];
+                // Show skip button for generation tools only
+                const toolName = match[1].toLowerCase().replace(/[^a-z_]/g, '');
+                const genTools = ['rfdiffusion', 'boltzgen', 'bindcraft', 'pxdesign', 'proteina', 'proteina_complexa'];
+                if (genTools.includes(toolName)) {
+                    updateSkipButtons(toolName);
+                } else {
+                    updateSkipButtons(null);  // hide all skip buttons for validation steps
+                }
+            }
+        } else if (line.includes('[SKIP]')) {
+            span.className = 'text-amber-400 font-bold';
+            updateSkipButtons(null);
+            // Update tool status for the skipped tool
+            const skipToolMatch = line.match(/skip of (\w+)/);
+            if (skipToolMatch) {
+                const el = document.getElementById('progress-' + skipToolMatch[1]);
+                if (el) { el.textContent = 'skipped'; el.className = 'text-xs text-amber-400'; }
+            }
+        } else if (line.includes('FAILED') || line.includes('Error') || line.includes('Traceback')) {
+            span.className = 'text-red-400';
+        } else if (line.includes('DONE') || line.includes('designs collected')) {
+            span.className = 'text-green-400';
+        } else if (line.includes('passed') || line.includes('OK')) {
+            span.className = 'text-green-300';
+        }
+
+        // Parse progress
+        const designMatch = line.match(/(\d+) designs collected/);
+        if (designMatch) {
+            const cnt = document.getElementById('design-count');
+            const cur = parseInt(cnt.textContent) || 0;
+            cnt.textContent = cur + parseInt(designMatch[1]);
+        }
+        const esmMatch = line.match(/ESMFold: (\d+)\/(\d+) passed/);
+        if (esmMatch) {
+            document.getElementById('esmfold-pass').textContent = esmMatch[1] + '/' + esmMatch[2];
+        }
+
+        // Live progress — [PROGRESS:tool] N/M
+        const progMatch = line.match(/\[PROGRESS:(\w+)\]\s*(\d+)\/(\d+)/);
+        if (progMatch) {
+            const toolId = progMatch[1];
+            const done = progMatch[2], total = progMatch[3];
+            const el = document.getElementById('progress-' + toolId);
+            if (el) {
+                const pct = Math.round(done / total * 100);
+                el.innerHTML = `<span class="text-blue-400">${done}/${total}</span> <span class="text-slate-600">(${pct}%)</span>`;
+                el.className = 'text-xs';
+            }
+            // Also update ESMFold pass counter from progress lines
+            if (toolId === 'esmfold') {
+                const passMatch = line.match(/(\d+) passed/);
+                if (passMatch) {
+                    document.getElementById('esmfold-pass').textContent = passMatch[1] + '/' + total;
+                }
+            }
+            span.className = 'text-slate-500';  // dim progress lines
+        }
+
+        // Rosetta progress — [N/M] design_id: dG=...
+        const rosettaMatch = line.match(/\[(\d+)\/(\d+)\]\s+\w+.*?dG=/);
+        if (rosettaMatch) {
+            const el = document.getElementById('progress-rosetta');
+            if (el) {
+                const pct = Math.round(rosettaMatch[1] / rosettaMatch[2] * 100);
+                el.innerHTML = `<span class="text-blue-400">${rosettaMatch[1]}/${rosettaMatch[2]}</span> <span class="text-slate-600">(${pct}%)</span>`;
+                el.className = 'text-xs';
+            }
+        }
+
+        // Boltz-2 step detection
+        if (line.includes('Boltz-2') || line.includes('validate_boltz') || line.includes('boltz predict')) {
+            const el = document.getElementById('progress-boltz');
+            if (el && el.textContent === '—') { el.textContent = 'running...'; el.className = 'text-xs text-blue-400'; }
+        }
+
+        // Tool status — map log names to sidebar element IDs
+        const toolOk = line.match(/(.+?):\s*(\d+) designs collected/);
+        if (toolOk) {
+            const logName = toolOk[1].replace(/^\[[\d:]+\]\s*/, '');  // strip timestamp
+            const nameMap = {
+                'RFdiffusion+LigandMPNN': 'rfdiffusion',
+                'BoltzGen': 'boltzgen',
+                'BindCraft': 'bindcraft',
+                'PXDesign': 'pxdesign',
+                'Proteina+LigandMPNN': 'proteina',
+                'Proteina Complexa': 'proteina_complexa',
+            };
+            const toolId = nameMap[logName] || logName.toLowerCase().replace(/\s+/g, '_');
+            const el = document.getElementById('progress-' + toolId);
+            if (el) { el.textContent = toolOk[2] + ' designs ✓'; el.className = 'text-xs text-green-400'; }
+            // Hide skip button for completed tool
+            const skipBtn = document.querySelector(`.skip-btn[data-tool="${toolId}"]`);
+            if (skipBtn) skipBtn.classList.add('hidden');
+        }
+
+        logEl.appendChild(span);
+        if (document.getElementById('autoscroll').checked) {
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+    };
+
+    // --- Skip button logic ---
+    let currentTool = null;
+
+    function updateSkipButtons(activeTool) {
+        document.querySelectorAll('.skip-btn').forEach(btn => {
+            if (btn.dataset.tool === activeTool) {
+                btn.classList.remove('hidden');
+            } else {
+                btn.classList.add('hidden');
+            }
+        });
+        currentTool = activeTool;
+    }
+
+    document.querySelectorAll('.skip-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const tool = btn.dataset.tool;
+            if (!confirm(`Skip ${tool}? This will kill the running process and collect partial output.`)) return;
+            btn.textContent = 'Skipping...';
+            btn.disabled = true;
+            btn.classList.add('opacity-50');
+            try {
+                const resp = await fetch(`/api/jobs/${jobId}/skip/${tool}`, { method: 'POST' });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    alert('Skip failed: ' + (err.detail || 'unknown error'));
+                    btn.textContent = 'Skip';
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50');
+                }
+            } catch (e) {
+                alert('Skip request failed: ' + e.message);
+                btn.textContent = 'Skip';
+                btn.disabled = false;
+                btn.classList.remove('opacity-50');
+            }
+        });
+    });
+
+    evtSource.addEventListener('status', (event) => {
+        const status = event.data;
+        evtSource.close();
+        const badge = document.getElementById('status-badge');
+        badge.classList.remove('animate-pulse', 'bg-blue-900', 'text-blue-300');
+        if (status === 'completed') {
+            badge.className = 'text-sm px-3 py-1 rounded bg-green-900 text-green-300';
+            badge.textContent = 'completed';
+            document.getElementById('results-link')?.classList.remove('hidden');
+            document.getElementById('cancel-btn')?.remove();
+            stepEl.textContent = 'Done';
+        } else {
+            badge.className = 'text-sm px-3 py-1 rounded bg-red-900 text-red-300';
+            badge.textContent = status;
+            stepEl.textContent = status;
+        }
+    });
+
+    evtSource.onerror = () => {
+        // Connection lost — check job status
+        setTimeout(async () => {
+            const resp = await fetch('/api/jobs/' + jobId);
+            const job = await resp.json();
+            if (job.status !== 'running') {
+                evtSource.close();
+                location.reload();
+            }
+        }, 3000);
+    };
+
+    async function cancelJob() {
+        if (!confirm('Cancel this job?')) return;
+        await fetch('/api/jobs/' + jobId, { method: 'DELETE' });
+        location.reload();
+    }
+</script>
+{% endblock %}

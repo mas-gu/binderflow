@@ -136,15 +136,19 @@ def load_rankings(csv_path: Path) -> pd.DataFrame:
             derived["binder_length"] = df["binder_sequence"].apply(
             lambda x: len(str(x)) if pd.notna(x) and x != "" else np.nan)
 
-    # pDockQ from iPTM + interface pLDDT (pDockQ2 formula, Zhu et al. 2023)
-    if "boltz_iptm" in df.columns and "boltz_iplddt" in df.columns:
-        iptm = df["boltz_iptm"].clip(lower=0.0)
+    # pDockQ2 (PAE-based, Zhu et al. 2023, Bioinformatics 39(7):btad424)
+    # x = <1/(1+(PAE/d0)^2)> * <pLDDT>_int,  d0=10 Å
+    # pDockQ2 = 1.31 / (1 + exp(-0.075 * (x - 84.733))) + 0.005
+    if "boltz_mean_interface_pae" in df.columns and "boltz_iplddt" in df.columns:
+        pae = df["boltz_mean_interface_pae"].clip(lower=0.0)
         iplddt = df["boltz_iplddt"].clip(lower=0.0)
-        derived["pDockQ"] = 1.0 / (1 + np.exp(-17.0 * (iptm * iplddt - 0.45)))
-    elif "boltz_iptm" in df.columns and "boltz_binder_plddt" in df.columns:
-        iptm = df["boltz_iptm"].clip(lower=0.0)
-        bplddt = (df["boltz_binder_plddt"] / 100.0).clip(lower=0.0)
-        derived["pDockQ"] = 1.0 / (1 + np.exp(-17.0 * (iptm * bplddt - 0.45)))
+        # iplddt on 0-100 scale (matching the original pDockQ2 calibration)
+        if iplddt.max() <= 1.5:
+            iplddt = iplddt * 100.0
+        d0 = 10.0
+        pae_factor = 1.0 / (1.0 + (pae / d0) ** 2)
+        x = pae_factor * iplddt
+        derived["pDockQ"] = 1.31 / (1 + np.exp(-0.075 * (x - 84.733))) + 0.005
 
     # Tier classification (top 7.5% = Tier 1, next 17.5% = Tier 2, rest = Tier 3)
     if "combined_score" in df.columns:

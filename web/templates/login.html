@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BinderFlow — Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { darkMode: 'class' }
+    </script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center">
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-8 w-full max-w-sm">
+        <h1 class="text-2xl font-bold text-blue-400 mb-2 text-center">BinderFlow</h1>
+        <p class="text-sm text-slate-400 mb-6 text-center">Protein binder design platform</p>
+
+        {% if error %}
+        <p class="text-red-400 text-sm mb-4 text-center">{{ error }}</p>
+        {% endif %}
+
+        <form method="POST" action="/login" class="space-y-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Your name</label>
+                <input type="text" name="username" required autofocus
+                       placeholder="e.g. Guillaume"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+            </div>
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded font-medium">
+                Enter
+            </button>
+        </form>
+    </div>
+</body>
+</html>

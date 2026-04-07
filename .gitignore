@@ -1,0 +1,43 @@
+# Machine-specific config (user paths — copy from config.example.yaml)
+config.yaml
+
+# Machine-specific deployment scripts
+restart_servers.sh
+install_boltzgen.sh
+install_proteina.sh
+
+# Internal deployment docs (contain hostnames, paths, usernames)
+WEBSERVER.md
+MSA_LOCAL.md
+RUN_COMMANDS.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Databases (contain per-machine job data)
+*.db
+*.db-shm
+*.db-wal
+
+# Uploads and outputs (user data)
+web/uploads/
+web/binderflow.db*
+
+# Geometry cache (large, auto-generated)
+geometry_cache.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env files
+.env

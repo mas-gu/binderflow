@@ -17,25 +17,25 @@ RADAR_AXES = [
     ("Binding (iPTM)\n0→1 | good >0.8", "boltz_iptm", True, 0.0, 1.0,
      "Interface predicted TM-score from Boltz-2.\n"
      "Good: > 0.8 | Excellent: > 0.9 | Poor: < 0.5"),
-    ("Structure (Sc)\n0→1 | good >0.55", "rosetta_sc", True, 0.0, 1.0,
-     "Rosetta shape complementarity — geometric fit between surfaces.\n"
-     "Natural interfaces: 0.64-0.68 | Good designed: > 0.55 | Poor: < 0.45"),
-    ("Stability (RMSD)\n0→5 Å | good <2.0", "refolding_rmsd", False, 0.0, 5.0,
+    ("Shape (Sc)\n0.3→1 | good >0.6", "rosetta_sc", True, 0.3, 1.0,
+     "Rosetta shape complementarity — geometric fit.\n"
+     "Good: > 0.6 | Poor: < 0.45 | Beta-sheet designs have lower Sc."),
+    ("Stability (RMSD)\n0→4 Å | good <2.5", "refolding_rmsd", False, 0.0, 4.0,
      "CA RMSD between binder alone (ESMFold) vs in complex (Boltz-2).\n"
-     "Stable fold: < 2.0 Å | Acceptable: < 3.0 Å | Target-dependent: > 4.0 Å"),
-    ("Docking (pDockQ)\n0→1 | good >0.8", "pDockQ", True, 0.0, 1.0,
-     "Predicted docking quality from iPTM × iPLDDT.\n"
-     "High confidence: > 0.8 | Medium: 0.5-0.8 | Low: < 0.3"),
-    ("Low KE\n0→100% | good <20%", "interface_KE_fraction", False, 0.0, 1.0,
+     "Stable: < 2.0 Å | Acceptable: < 3.0 Å | Unstable: > 4.0 Å"),
+    ("Interface (PAE)\n0→30 Å | good <10", "boltz_mean_interface_pae", False, 0.0, 30.0,
+     "Boltz-2 mean predicted aligned error at the interface.\n"
+     "Confident: < 5 Å | Acceptable: < 10 Å | Poor: > 15 Å"),
+    ("Low K+E\n0→50% | good <25%", "interface_KE_fraction", False, 0.0, 0.5,
      "Lysine + Glutamate fraction at the binder-target interface.\n"
-     "Good: < 20% | Acceptable: < 25% | Risky: > 30% (non-specific binding)"),
-    ("Low Agg (SAP)\n0→300 | good <80", "rosetta_sap", False, 0.0, 300.0,
+     "Good: < 20% | Acceptable: < 25% | Risky: > 30%"),
+    ("Low Agg (SAP)\n0→150 | good <80", "rosetta_sap", False, 0.0, 150.0,
      "Surface Aggregation Propensity — hydrophobic exposure.\n"
-     "Lower is better. Good: < 80 | Moderate: 80-150 | High risk: > 200"),
-    ("Solubility (NetSolP)\n0→1 | good >0.7", "netsolp_solubility", True, 0.0, 1.0,
+     "Scales with protein size. Good: < 80 | Moderate: 80-120 | High: > 120"),
+    ("Solubility\n0.5→1 | good >0.7", "netsolp_solubility", True, 0.5, 1.0,
      "Predicted E.coli solubility (NetSolP, ESM-based).\n"
-     "Soluble: > 0.7 | Borderline: 0.4-0.7 | Insoluble: < 0.4"),
-    ("Site Focus (SIF)\n0→1 | good >0.5", "site_interface_fraction", True, 0.0, 1.0,
+     "Soluble: > 0.7 | Borderline: 0.5-0.7 | Insoluble: < 0.5"),
+    ("Site Focus (SIF)\n0→1 | good >0.3", "site_interface_fraction", True, 0.0, 1.0,
      "Fraction of binder interface at the specified binding site.\n"
      "On-site: > 0.5 | Partial: 0.25-0.5 | Off-site: < 0.2"),
 ]
@@ -50,6 +50,7 @@ class RadarChart(QWidget):
         super().__init__(parent)
         self._df = pd.DataFrame()
         self._active_axes = RADAR_AXES
+        self._scaling = {}
         self._selected_design = None
         self._setup_ui()
 
@@ -89,10 +90,61 @@ class RadarChart(QWidget):
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
 
+        self.legend_label = QLabel("")
+        self.legend_label.setWordWrap(True)
+        self.legend_label.setStyleSheet("color: #999; font-size: 9px; padding: 4px;")
+        layout.addWidget(self.legend_label)
+
+    def _compute_scaling(self, df):
+        """Compute adaptive scaling parameters for each axis based on data."""
+        self._scaling = {}
+        for axis_info in self._active_axes:
+            col = axis_info[1]
+            higher = axis_info[2]
+            vmin, vmax = axis_info[3], axis_info[4]
+
+            vals = df[col].dropna().sort_values().values if col in df.columns else np.array([])
+
+            # Determine strategy from axis config
+            if col == "rosetta_sap" and len(vals) >= 5:
+                # Data-driven: percentile-based
+                p5 = np.percentile(vals, 5)
+                p50 = np.percentile(vals, 50)
+                p95 = np.percentile(vals, 95)
+                self._scaling[col] = {"strategy": "data_driven", "p5": p5, "p50": p50, "p95": p95, "higher": higher}
+            elif col == "boltz_mean_interface_pae":
+                self._scaling[col] = {"strategy": "threshold", "floor": 0, "mid": 10, "mid_pct": 0.5, "ceiling": 30, "higher": higher}
+            elif col == "refolding_rmsd":
+                self._scaling[col] = {"strategy": "threshold", "floor": 0, "mid": 2.5, "mid_pct": 0.5, "ceiling": 7.5, "higher": higher}
+            elif col == "interface_KE_fraction":
+                self._scaling[col] = {"strategy": "threshold", "floor": 0, "mid": 0.25, "mid_pct": 0.5, "ceiling": 0.75, "higher": higher}
+            elif col == "site_interface_fraction":
+                self._scaling[col] = {"strategy": "threshold", "floor": 0, "mid": 0.30, "mid_pct": 0.5, "ceiling": 0.60, "higher": higher}
+            elif col == "rosetta_sc":
+                self._scaling[col] = {"strategy": "threshold", "floor": 0, "mid": 0.45, "mid_pct": 0.70, "ceiling": 1.0, "higher": higher}
+            else:
+                self._scaling[col] = {"strategy": "fixed", "floor": vmin, "ceiling": vmax, "higher": higher}
+
     def set_data(self, df: pd.DataFrame):
         self._df = df
         self._active_axes = self._get_available_axes(df)
+        self._compute_scaling(df)
         self._selected_design = None
+
+        # Update legend with scaling info
+        legend_parts = []
+        for axis_info in self._active_axes:
+            col = axis_info[1]
+            sc = self._scaling.get(col, {})
+            name = axis_info[0].split("\n")[0]
+            strategy = sc.get("strategy", "fixed")
+            if strategy == "data_driven":
+                legend_parts.append(f"{name}: data-driven (p5={sc['p5']:.0f}, p95={sc['p95']:.0f})")
+            elif strategy == "threshold":
+                legend_parts.append(f"{name}: threshold @ {sc['mid']} \u2192 {sc.get('mid_pct', 0.5)*100:.0f}%")
+            else:
+                legend_parts.append(f"{name}: fixed {sc['floor']}\u2013{sc['ceiling']}")
+        self.legend_label.setText("Scaling: " + " | ".join(legend_parts))
 
         # Populate rank selector with top 50
         self.rank_combo.blockSignals(True)
@@ -148,12 +200,59 @@ class RadarChart(QWidget):
                 self._replot()
 
     def _normalize(self, values, col_info):
-        _, _, higher_better, vmin, vmax = col_info[:5]
-        clipped = np.clip(values, vmin, vmax)
-        normed = (clipped - vmin) / (vmax - vmin) if vmax > vmin else 0.5
-        if not higher_better:
-            normed = 1.0 - normed
-        return normed
+        """Normalize a value using adaptive scaling."""
+        col = col_info[1]
+        sc = self._scaling.get(col)
+        if sc is None:
+            # Fallback to fixed linear
+            _, _, higher_better, vmin, vmax = col_info[:5]
+            clipped = np.clip(values, vmin, vmax)
+            normed = (clipped - vmin) / (vmax - vmin) if vmax > vmin else 0.5
+            if not higher_better:
+                normed = 1.0 - normed
+            return normed
+
+        val = float(values) if np.isscalar(values) else values
+
+        if sc["strategy"] == "data_driven":
+            p5, p95 = sc["p5"], sc["p95"]
+            if p5 == p95:
+                return 0.5
+            if sc["higher"]:
+                normed = (val - p5) / (p95 - p5)
+            else:
+                normed = (p95 - val) / (p95 - p5)
+            return float(np.clip(normed, 0, 1))
+
+        elif sc["strategy"] == "threshold":
+            floor, mid, ceiling = sc["floor"], sc["mid"], sc["ceiling"]
+            mp = sc.get("mid_pct", 0.5)
+            if sc["higher"]:
+                if val <= floor:
+                    return 0.0
+                elif val <= mid:
+                    return mp * (val - floor) / (mid - floor) if mid > floor else 0.0
+                elif val <= ceiling:
+                    return mp + (1 - mp) * (val - mid) / (ceiling - mid) if ceiling > mid else mp
+                else:
+                    return 1.0
+            else:
+                if val <= floor:
+                    return 1.0
+                elif val <= mid:
+                    return 1 - mp * (val - floor) / (mid - floor) if mid > floor else 1.0
+                elif val <= ceiling:
+                    return (1 - mp) - (1 - mp) * (val - mid) / (ceiling - mid) if ceiling > mid else 0.0
+                else:
+                    return 0.0
+
+        else:  # fixed
+            floor, ceiling = sc["floor"], sc["ceiling"]
+            clipped = float(np.clip(val, floor, ceiling))
+            normed = (clipped - floor) / (ceiling - floor) if ceiling > floor else 0.5
+            if not sc["higher"]:
+                normed = 1.0 - normed
+            return float(normed)
 
     def _get_available_axes(self, df):
         available = []
