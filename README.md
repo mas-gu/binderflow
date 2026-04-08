@@ -22,12 +22,12 @@ Given a target protein PDB and a binding site, the pipeline:
 | Tool | Type | What it generates | Reference |
 |------|------|-------------------|-----------|
 | [RFdiffusion](https://github.com/RosettaCommons/RFdiffusion) | Backbone diffusion | Backbone + LigandMPNN sequences | Watson et al., Nature 2023 |
-| [BoltzGen](https://github.com/HannesStark/boltzgen) | Full-atom diffusion | Full-atom binder structures | Stark et al., 2025 |
-| [BindCraft](https://github.com/martinpacesa/BindCraft) | AF2-guided optimization | Iterative sequence design | Pacesa et al., 2024 |
-| [PXDesign](https://github.com/bytedance/PXDesign) | DiT diffusion + AF2-IG | Backbone + sequence + validation | ByteDance, 2024 |
-| [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina/) | Flow-based backbone | Unconditional backbones + ProteinMPNN | NVIDIA, 2024 |
-| [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) | Flow-based full-atom | Target-conditioned binder design | NVIDIA, ICLR 2026 |
-| [RFdiffusion3](https://github.com/RosettaCommons/foundry) | All-atom diffusion | Full-atom binder + sequence (Foundry) | Baker Lab, 2025 |
+| [BoltzGen](https://github.com/HannesStark/boltzgen) | Full-atom diffusion | Full-atom binder structures | Stark et al., bioRxiv 2025 |
+| [BindCraft](https://github.com/martinpacesa/BindCraft) | AF2-guided optimization | Iterative sequence design | Pacesa et al., Nature 2025 |
+| [PXDesign](https://github.com/bytedance/PXDesign) | DiT diffusion + AF2-IG | Backbone + sequence + validation | Ren et al., bioRxiv 2025 |
+| [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina/) | Flow-based backbone | Unconditional backbones + ProteinMPNN | Geffner et al., ICLR 2025 |
+| [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) | Flow-based full-atom | Target-conditioned binder design | Gion, Tretina et al., ICLR 2026 |
+| [RFdiffusion3](https://github.com/RosettaCommons/foundry) | All-atom diffusion | Full-atom binder + sequence (Foundry) | Butcher, Krishna et al., bioRxiv 2025 |
 
 ## Two Ways to Use
 
