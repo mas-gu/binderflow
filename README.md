@@ -54,15 +54,6 @@ ProteaFlow can be used via the **command line** or the **web interface**. Both r
 | ![Tools](docs/screenshots/web_tools.png) | ![Detail](docs/screenshots/web_detail.png) |
 | Tool comparison — box plots, histograms | Design detail — scores, sequence, 3D viewer |
 
-### Screenshots — Command Line
-
-| | |
-|---|---|
-| ![CLI Run](docs/screenshots/cli_run.png) | ![CLI Dashboard](docs/screenshots/cli_dashboard.png) |
-| Pipeline terminal output | Dashboard plot (auto-generated) |
-| ![PyMOL](docs/screenshots/cli_pymol.png) | ![Desktop Browser](docs/screenshots/cli_browser.png) |
-| PyMOL visualization (view_by_chain.pml) | Desktop browser (PyQt6) |
-
 ### Quick Start — Web Interface
 
 ```bash
