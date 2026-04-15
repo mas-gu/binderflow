@@ -3,9 +3,15 @@
 
 **Author:** Guillaume Mas
 
-A unified pipeline for de novo protein binder design using seven complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
+A unified pipeline for de novo protein binder and small molecule design using 10 generative tools (including compounds libraries). Automated validation, scoring, and ranking pipeline. Intuitive web interface for job submission, live monitoring and interactive result exploration — no coding required.
 
 ![Pipeline Overview](docs/design/pipeline_overview.png)
+
+![Molecule Pipeline Overview](docs/design/pipeline_overview_molecules.png)
+
+## Binders Design
+
+A unified pipeline for de novo protein binder design using seven complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
 
 ## Overview
 
