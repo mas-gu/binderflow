@@ -1,4 +1,5 @@
-# proteaflow
+# ProteaFlow
+*formerly BinderFlow*
 
 **Author:** Guillaume Mas
 
@@ -505,12 +506,14 @@ Structure-based drug design (SBDD) pipeline for de novo molecule generation and 
 
 | | |
 |---|---|
-| ![Mol Rankings](docs/screenshots/mol_rankings.png) | ![Mol Scatter](docs/screenshots/mol_scatter.png) |
-| Rankings — unified table with all tools + library | Scatter — score distribution by tool |
-| ![Mol Detail](docs/screenshots/mol_detail.png) | ![Mol 3D](docs/screenshots/mol_3d_viewer.png) |
-| Design detail — physicochemical + medicinal chemistry properties | 3D viewer — pocket + molecule + contacts |
-| ![Mol Dashboard](docs/screenshots/mol_dashboard.png) | ![Mol Tools](docs/screenshots/mol_tools.png) |
-| Dashboard — score distributions, QED vs Vina | Tool comparison — per-tool statistics |
+| ![Mol Launch](docs/screenshots/mol_launch.png) | ![Mol Rankings](docs/screenshots/mol_rankings.png) |
+| Launch — target upload, site definition, tool selection | Rankings — unified table with all tools + library screening |
+| ![Mol Scatter](docs/screenshots/mol_scatter.png) | ![Mol 3D](docs/screenshots/mol_3d_viewer.png) |
+| Scatter — score distribution by tool | 3D viewer — pocket + molecule + contacts |
+| ![Mol Dashboard](docs/screenshots/mol_dashboard.png) | ![Mol Dashboard Gen](docs/screenshots/mol_dashboard_gen.png) |
+| Dashboard — score distributions, QED vs Vina | Generation dashboard — design progress |
+| ![Mol Radar](docs/screenshots/mol_radar.png) | ![Mol Radar Gen](docs/screenshots/mol_radar_gen.png) |
+| Radar — multi-axis profile (QED, SA, Vina, diversity) | Generation radar — tool comparison |
 
 ### Quick Start — Small Molecule Design
 
