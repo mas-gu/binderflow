@@ -5,8 +5,10 @@
 
 A unified pipeline for de novo protein binder and small molecule design using 10 generative tools (including compounds libraries). Automated validation, scoring, and ranking pipeline. Intuitive web interface for job submission, live monitoring and interactive result exploration — no coding required.
 
+#### Protein Binder Design Pipeline
 ![Pipeline Overview](docs/design/pipeline_overview.png)
 
+#### Small Molecule Design Pipeline
 ![Molecule Pipeline Overview](docs/design/pipeline_overview_molecules.png)
 
 ## Binders Design
