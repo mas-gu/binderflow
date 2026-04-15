@@ -250,7 +250,7 @@ async def import_dir(req: ImportRequest, request: Request):
         created_at = final_dir.stat().st_mtime
 
     # Get username from cookie
-    username = request.cookies.get("binderflow_user", "")
+    username = request.cookies.get("proteaflow_user", "")
 
     # Create DB entry — unique index on out_dir prevents duplicates at DB level
     params = {

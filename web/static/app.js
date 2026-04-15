@@ -1,4 +1,4 @@
-/* BinderFlow shared client-side JS */
+/* ProteaFlow shared client-side JS */
 
 // Format relative time
 function timeAgo(timestamp) {

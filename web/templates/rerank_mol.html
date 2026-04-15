@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}ProteaFlow — Molecule Rerank{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Rerank Molecule Results</h1>
+<p class="text-sm text-slate-400 mb-6">Re-rank and merge molecule design results. No GPU needed. Vina scores from original runs are reused.</p>
+
+<form id="rerank-form" class="space-y-6" enctype="multipart/form-data">
+    <!-- Input -->
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+        <h2 class="text-lg font-semibold mb-4 text-slate-200">Input</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Job Name</label>
+                <input type="text" name="job_name" required
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="pdia6_mol_rerank">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Project</label>
+                <input type="text" name="project"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="pdia6_molecules">
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-sm text-slate-400 mb-1">Results directory (comma-separate to merge multiple runs)</label>
+                <input type="text" name="results_dir" required id="results_dir_input"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="/path/to/run1/,/path/to/run2/"
+                       value="{{ prefill_results_dir or '' }}">
+                {% if completed_jobs %}
+                <div class="mt-1">
+                    <label class="text-xs text-slate-500">Pick from completed molecule jobs:</label>
+                    <select id="prev-job-select" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs mt-1">
+                        <option value="">-- Select to add --</option>
+                        {% for j in completed_jobs %}
+                        <option value="{{ j.out_dir }}" data-target="{{ j.target_file }}" data-site="{{ j.site }}" data-project="{{ j.project or '' }}">
+                            {{ j.name }} ({{ j.out_dir.split('/')[-1] }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endif %}
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Target PDB</label>
+                <input type="file" name="target" accept=".pdb,.cif"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
+                <input type="text" name="target_path" id="target_path_input"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1 text-xs mt-1"
+                       placeholder="Or server path to target PDB">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Binding site</label>
+                <input type="text" name="site" required id="site_input"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="A:325-330">
+            </div>
+        </div>
+    </div>
+
+    <!-- Scoring -->
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+        <h2 class="text-lg font-semibold mb-4 text-slate-200">Scoring</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Score weights (Vina, QED, SA, PocketFit)</label>
+                <input type="text" name="score_weights"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       value="{{ score_weights }}">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Pocket distance (A)</label>
+                <input type="number" name="pocket_dist" step="0.5"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       value="8.0">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Top N molecules</label>
+                <input type="number" name="top_n"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       value="50">
+            </div>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+        <h2 class="text-lg font-semibold mb-4 text-slate-200">Hard Filters</h2>
+        <p class="text-xs text-slate-500 mb-3">Leave blank to skip. Molecules failing any filter are excluded from ranking.</p>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Min QED</label>
+                <input type="number" name="min_qed" step="0.05"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="e.g. 0.5">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Max SA score</label>
+                <input type="number" name="max_sa" step="0.5"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="e.g. 4.0">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Min pocket fit</label>
+                <input type="number" name="min_pocket_fit" step="0.05"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="e.g. 0.5">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">MW range (min,max)</label>
+                <input type="text" name="mw_range"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="e.g. 150,600">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Min Vina (most negative)</label>
+                <input type="number" name="min_vina" step="0.5"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="e.g. -10">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Max Vina (least negative)</label>
+                <input type="number" name="max_vina" step="0.5"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
+                       placeholder="e.g. -3">
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden fields -->
+    <input type="hidden" name="job_type" value="mol_rerank">
+    <input type="hidden" name="gpu_id" value="0">
+
+    <!-- Submit -->
+    <button type="submit"
+            class="bg-amber-600 hover:bg-amber-500 text-white font-semibold px-6 py-3 rounded-lg text-lg">
+        Rerank Molecules
+    </button>
+</form>
+
+<script>
+// Auto-fill from job dropdown
+document.getElementById('prev-job-select')?.addEventListener('change', function() {
+    const opt = this.selectedOptions[0];
+    if (!opt?.value) return;
+    // Append to results_dir (comma-separated for merge)
+    const input = document.getElementById('results_dir_input');
+    if (input.value.trim()) {
+        input.value = input.value.trim() + ',' + opt.value;
+    } else {
+        input.value = opt.value;
+    }
+    // Auto-fill target and site from first selected job
+    const target = opt.dataset.target;
+    const site = opt.dataset.site;
+    const project = opt.dataset.project;
+    if (target) document.getElementById('target_path_input').value = target;
+    if (site) document.getElementById('site_input').value = site;
+    if (project) {
+        const projInput = document.querySelector('input[name="project"]');
+        if (projInput && !projInput.value) projInput.value = project;
+    }
+});
+
+// Submit form
+document.getElementById('rerank-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const formData = new FormData(this);
+    // Use target_path if no file uploaded
+    if (!formData.get('target')?.size && formData.get('target_path')) {
+        formData.set('target_path', formData.get('target_path'));
+    }
+    try {
+        const resp = await fetch('/api/jobs', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (resp.ok) {
+            window.location.href = '/monitor/' + data.job_id;
+        } else {
+            alert('Error: ' + (data.detail || JSON.stringify(data)));
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+});
+</script>
+{% endblock %}

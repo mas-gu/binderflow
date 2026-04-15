@@ -27,6 +27,12 @@ TOOL_PREFIXES = {
     "proteina_": "proteina",
     "pc_": "proteina_complexa",
     "proteina_complexa_": "proteina_complexa",
+    "pocketflow_": "pocketflow",
+    "molcraft_": "molcraft",
+    "pocketxmol_": "pocketxmol",
+    "pocket2mol_": "pocket2mol",
+    "decompdiff_": "decompdiff",
+    "library_": "library",
 }
 
 # Key columns to show by default in rankings table

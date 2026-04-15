@@ -18,7 +18,9 @@ def identify_tool(design_id: str) -> str:
             return TOOL_PREFIXES[prefix]
     # Fallback: check if tool name is anywhere in design_id
     for tool_name in ["rfdiffusion", "boltzgen", "bindcraft", "pxdesign",
-                      "proteina_complexa", "proteina"]:
+                      "proteina_complexa", "proteina",
+                      "pocketflow", "molcraft", "pocketxmol",
+                      "pocket2mol", "decompdiff", "library"]:
         if tool_name in design_id_lower:
             return tool_name
     return "unknown"
@@ -120,6 +122,10 @@ def load_rankings(csv_path: Path) -> pd.DataFrame:
         "site_centroid_dist_CA", "site_centroid_dist_heavy", "site_cos_angle",
         "refolding_rmsd", "interface_KE_fraction", "rosetta_sap",
         "netsolp_solubility",
+        # Molecule pipeline descriptors
+        "qed", "sa_score", "vina_score", "mw", "logp", "tpsa",
+        "num_heavy_atoms", "num_rotatable_bonds", "molar_refractivity", "fsp3",
+        "ligand_efficiency", "pocket_fit",
     ]
     for col in numeric_cols:
         if col in df.columns:

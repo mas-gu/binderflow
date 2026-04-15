@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}BinderFlow{% endblock %}</title>
+    <title>{% block title %}ProteaFlow{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -28,7 +28,7 @@
     <nav class="bg-slate-900 border-b border-slate-700 px-6 py-3">
         <div class="flex items-center justify-between max-w-7xl mx-auto">
             <a href="/" class="text-xl font-bold text-blue-400 hover:text-blue-300">
-                BinderFlow
+                ProteaFlow
             </a>
             <div class="flex gap-4 items-center">
                 <a href="/" class="text-slate-300 hover:text-white px-3 py-1 rounded hover:bg-slate-800">Dashboard</a>
@@ -49,7 +49,43 @@
         {% block content %}{% endblock %}
     </main>
 
+    <!-- Toast notifications container -->
+    <div id="toast-container"></div>
+
     <script src="/static/app.js"></script>
+    <script>
+    // Toast notification system
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
+    }
+
+    // AG Grid score gradient cell renderer
+    function scoreCellRenderer(params) {
+        if (params.value == null || isNaN(params.value)) return '--';
+        const col = params.colDef.field;
+        const v = parseFloat(params.value);
+        let cls = '';
+        // Higher is better
+        if (['combined_score', 'qed', 'pocket_fit'].includes(col)) {
+            cls = v >= 0.7 ? 'cell-good' : v >= 0.4 ? 'cell-medium' : 'cell-bad';
+        }
+        // Lower is better
+        else if (['sa_score'].includes(col)) {
+            cls = v <= 3 ? 'cell-good' : v <= 5 ? 'cell-medium' : 'cell-bad';
+        }
+        // More negative is better
+        else if (['vina_score'].includes(col)) {
+            cls = v <= -8 ? 'cell-good' : v <= -4 ? 'cell-medium' : 'cell-bad';
+        }
+        return `<span class="${cls}">${typeof v === 'number' ? v.toFixed(3) : v}</span>`;
+    }
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

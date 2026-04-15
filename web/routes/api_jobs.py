@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Form, UploadFile, File, HTTPException, Request
 
 from .. import database
-from ..config import UPLOADS_DIR, OUTPUTS_BASE
+from ..config import UPLOADS_DIR, OUTPUTS_BASE, MOLECULE_OUTPUTS_BASE, MOLECULE_TOOLS
 from ..gpu import query_gpus, invalidate_cache
 from .. import job_runner
 
@@ -50,12 +50,19 @@ async def create_job(
     out_dir_override: str = Form(""),
     max_interface_ke: float = Form(None),
     bindcraft_filters: str = Form("no_filters"),
+    n_tag: str = Form(""),
+    c_tag: str = Form(""),
+    # Molecule-specific params (optional, only used when job_type="molecule")
+    library: str = Form(""),
+    no_vina: str = Form(""),
+    pocket_dist: str = Form("8.0"),
+    max_atoms: str = Form("35"),
 ):
-    username = request.cookies.get("binderflow_user", "")
+    username = request.cookies.get("proteaflow_user", "")
     project = project.strip() or "unassigned"
     # Validate GPU — skip for rank_only reranks (no GPU needed)
     # GPU busy check is informational only — don't block job creation
-    is_rerank_no_gpu = (job_type == "rerank" and not reprediction)
+    is_rerank_no_gpu = (job_type == "rerank" and not reprediction) or job_type == "mol_rerank"
     if not is_rerank_no_gpu:
         gpus = query_gpus()
         gpu = next((g for g in gpus if g.index == gpu_id), None)
@@ -88,9 +95,22 @@ async def create_job(
         out_dir = out_dir_override
     else:
         safe_project = _sanitize_name(project)
-        out_dir = str(OUTPUTS_BASE / safe_project / f"{date_str}_{safe_name}")
+        if job_type in ("molecule", "mol_rerank"):
+            outputs_base = MOLECULE_OUTPUTS_BASE
+        else:
+            outputs_base = OUTPUTS_BASE
+        out_dir = str(outputs_base / safe_project / f"{date_str}_{safe_name}")
     log_file = str(Path(out_dir) / "run.log")
     Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    # For molecule jobs, the 'tools' Form param may contain binder defaults
+    # when no molecule tools are checked. Filter to valid molecule tools only.
+    if job_type == "molecule":
+        valid_mol_tools = set(MOLECULE_TOOLS)
+        mol_tools = [t.strip() for t in tools.split(",") if t.strip() in valid_mol_tools]
+        tools_str = ",".join(mol_tools)  # empty string if library-only
+    else:
+        tools_str = None  # not used for binder jobs here
 
     params = {
         "job_type": job_type,
@@ -118,7 +138,19 @@ async def create_job(
         "out_dir": out_dir,
         "log_file": log_file,
         "results_dir": results_dir,
+        "n_tag": n_tag.strip(),
+        "c_tag": c_tag.strip(),
     }
+
+    if job_type == "molecule":
+        params["library"] = library.strip() if library else ""
+        params["no_vina"] = bool(no_vina)
+        params["pocket_dist"] = pocket_dist
+        params["max_atoms"] = max_atoms
+        params["tools"] = tools_str
+    elif job_type == "mol_rerank":
+        params["pocket_dist"] = pocket_dist
+        params["score_weights"] = score_weights
 
     job_id = await database.create_job(
         name=job_name,
@@ -171,6 +203,21 @@ async def archive_job(job_id: str):
     return {"archived": True}
 
 
+@router.patch("/jobs/{job_id}/rename")
+async def rename_job(job_id: str, name: str = Form(...)):
+    """Rename a completed/failed job (display name only, does not move files)."""
+    job = await database.get_job_any_machine(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] == "running":
+        raise HTTPException(400, "Cannot rename a running job")
+    new_name = name.strip()
+    if not new_name:
+        raise HTTPException(400, "Name cannot be empty")
+    await database.update_job(job_id, name=new_name)
+    return {"renamed": True, "name": new_name}
+
+
 @router.delete("/jobs/{job_id}")
 async def cancel_job(job_id: str):
     job = await database.get_job(job_id)
@@ -192,7 +239,8 @@ async def skip_tool(job_id: str, tool: str):
     current generation step — validation steps are not skippable.
     """
     VALID_TOOLS = {"rfdiffusion", "boltzgen", "bindcraft", "pxdesign",
-                   "proteina", "proteina_complexa"}
+                   "proteina", "proteina_complexa",
+                   "pocketflow", "molcraft", "pocketxmol", "pocket2mol", "decompdiff"}
     if tool not in VALID_TOOLS:
         raise HTTPException(400, f"Invalid tool: {tool}. Must be one of {VALID_TOOLS}")
 

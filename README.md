@@ -1,10 +1,8 @@
-# binderflow
+# proteaflow
 
 **Author:** Guillaume Mas
 
 A unified pipeline for de novo protein binder design using seven complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
-
-![pipeline overview](docs/design/pipeline_overview.png)
 
 ## Overview
 
@@ -22,16 +20,16 @@ Given a target protein PDB and a binding site, the pipeline:
 | Tool | Type | What it generates | Reference |
 |------|------|-------------------|-----------|
 | [RFdiffusion](https://github.com/RosettaCommons/RFdiffusion) | Backbone diffusion | Backbone + LigandMPNN sequences | Watson et al., Nature 2023 |
-| [BoltzGen](https://github.com/HannesStark/boltzgen) | Full-atom diffusion | Full-atom binder structures | Stark et al., bioRxiv 2025 |
-| [BindCraft](https://github.com/martinpacesa/BindCraft) | AF2-guided optimization | Iterative sequence design | Pacesa et al., Nature 2025 |
-| [PXDesign](https://github.com/bytedance/PXDesign) | DiT diffusion + AF2-IG | Backbone + sequence + validation | Ren et al., bioRxiv 2025 |
-| [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina/) | Flow-based backbone | Unconditional backbones + ProteinMPNN | Geffner et al., ICLR 2025 |
-| [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) | Flow-based full-atom | Target-conditioned binder design | Gion, Tretina et al., ICLR 2026 |
-| [RFdiffusion3](https://github.com/RosettaCommons/foundry) | All-atom diffusion | Full-atom binder + sequence (Foundry) | Butcher, Krishna et al., bioRxiv 2025 |
+| [BoltzGen](https://github.com/HannesStark/boltzgen) | Full-atom diffusion | Full-atom binder structures | Stark et al., 2025 |
+| [BindCraft](https://github.com/martinpacesa/BindCraft) | AF2-guided optimization | Iterative sequence design | Pacesa et al., 2024 |
+| [PXDesign](https://github.com/bytedance/PXDesign) | DiT diffusion + AF2-IG | Backbone + sequence + validation | ByteDance, 2024 |
+| [Proteina](https://github.com/NVIDIA-Digital-Bio/proteina/) | Flow-based backbone | Unconditional backbones + ProteinMPNN | NVIDIA, 2024 |
+| [Proteina Complexa](https://github.com/NVIDIA-Digital-Bio/proteina-complexa) | Flow-based full-atom | Target-conditioned binder design | NVIDIA, ICLR 2026 |
+| [RFdiffusion3](https://github.com/RosettaCommons/foundry) | All-atom diffusion | Full-atom binder + sequence (Foundry) | Baker Lab, 2025 |
 
 ## Two Ways to Use
 
-BinderFlow can be used via the **command line** or the **web interface**. Both run the same underlying pipeline scripts and produce identical outputs.
+ProteaFlow can be used via the **command line** or the **web interface**. Both run the same underlying pipeline scripts and produce identical outputs.
 
 | | Command Line | Web Interface |
 |---|---|---|
@@ -55,14 +53,21 @@ BinderFlow can be used via the **command line** or the **web interface**. Both r
 | Scatter — 13 presets, colored by tool | Radar — 8-axis developability profile |
 | ![Tools](docs/screenshots/web_tools.png) | ![Detail](docs/screenshots/web_detail.png) |
 | Tool comparison — box plots, histograms | Design detail — scores, sequence, 3D viewer |
-| ![Rerank](docs/screenshots/web_rerank.png) | |
-| Rerank — filter presets, live re-scoring | |
+
+### Screenshots — Command Line
+
+| | |
+|---|---|
+| ![CLI Run](docs/screenshots/cli_run.png) | ![CLI Dashboard](docs/screenshots/cli_dashboard.png) |
+| Pipeline terminal output | Dashboard plot (auto-generated) |
+| ![PyMOL](docs/screenshots/cli_pymol.png) | ![Desktop Browser](docs/screenshots/cli_browser.png) |
+| PyMOL visualization (view_by_chain.pml) | Desktop browser (PyQt6) |
 
 ### Quick Start — Web Interface
 
 ```bash
 conda activate boltz
-uvicorn binderflow.web.app:app --host 0.0.0.0 --port 8080
+uvicorn proteaflow.web.app:app --host 0.0.0.0 --port 8080
 ```
 
 Open `http://localhost:8080/`, log in with your name, create a project, and launch a job from the browser.
@@ -86,17 +91,7 @@ CUDA_VISIBLE_DEVICES=0 python generate_binders.py \
     --out_dir ./output/
 ```
 
-CLI results can be viewed in the web interface by registering the output directory, or explored with the PyQt6 desktop browser (`python -m binderflow.binder_browser --results_dir ./output/`).
-
-### Screenshots — Desktop Browser
-
-<img width="657" height="409" alt="rankings" src="https://github.com/user-attachments/assets/30e35c35-db1a-42ef-b759-b03b0bc14d01" />
-
-<img width="657" height="409" alt="radar" src="https://github.com/user-attachments/assets/02127c2c-f17d-47a9-9eed-5d38a3b53270" />
-
-<img width="657" height="409" alt="detail" src="https://github.com/user-attachments/assets/ba327667-b0aa-4585-9340-704544d44dba" />
-
-<img width="657" height="409" alt="dashboard" src="https://github.com/user-attachments/assets/f75628e3-4bc1-41bf-92c4-cdffba8fc370" />
+CLI results can be viewed in the web interface by registering the output directory, or explored with the PyQt6 desktop browser (`python -m proteaflow.binder_browser --results_dir ./output/`).
 
 ## Installation
 
@@ -503,6 +498,118 @@ Run both `balanced` and `beta` for structural diversity. Beta mode produces lowe
 
 **Note:** Most tools produce helical binders regardless of beta bias. Only BoltzGen (~25% sheet) and Proteina Complexa (~16% sheet) respond meaningfully to beta conditioning.
 
+## Small Molecule Design
+
+Structure-based drug design (SBDD) pipeline for de novo molecule generation and virtual screening, with Uni-Dock GPU docking and unified ranking.
+
+### Molecule Design Tools
+
+| Tool | Method | Speed (100 mols) | Validity | Reference |
+|------|--------|-------------------|----------|-----------|
+| [PocketFlow](https://github.com/Genentech/PocketFlow) | Autoregressive flow | ~5 min | ~98% | Genentech, 2024 |
+| [MolCRAFT](https://github.com/AlgoMole/MolCRAFT) (MolPilot) | Bayesian flow network | ~15 min | ~77% | ICML 2024 |
+| [PocketXMol](https://github.com/pengxingang/PocketXMol) | Foundation model + AR refinement | ~12 min | ~94% | Cell 2026 |
+
+### Screenshots — Small Molecule Pipeline
+
+| | |
+|---|---|
+| ![Mol Rankings](docs/screenshots/mol_rankings.png) | ![Mol Scatter](docs/screenshots/mol_scatter.png) |
+| Rankings — unified table with all tools + library | Scatter — score distribution by tool |
+| ![Mol Detail](docs/screenshots/mol_detail.png) | ![Mol 3D](docs/screenshots/mol_3d_viewer.png) |
+| Design detail — physicochemical + medicinal chemistry properties | 3D viewer — pocket + molecule + contacts |
+| ![Mol Dashboard](docs/screenshots/mol_dashboard.png) | ![Mol Tools](docs/screenshots/mol_tools.png) |
+| Dashboard — score distributions, QED vs Vina | Tool comparison — per-tool statistics |
+
+### Quick Start — Small Molecule Design
+
+```bash
+conda activate boltz
+
+# De novo design with all 3 tools + multi-library screening
+CUDA_VISIBLE_DEVICES=0 python generate_molecules.py \
+    --target target.pdb \
+    --site "A:340-355" \
+    --tools pocketflow,molcraft,pocketxmol \
+    --library drugbank.smi,ppi.smi,zinc_fda.smi \
+    --mode test \
+    --pocket_dist 8.0 \
+    --device cuda:0 \
+    --out_dir ./molecules/
+
+# Library-only screening (no de novo tools)
+python generate_molecules.py \
+    --target target.pdb \
+    --site "A:340-355" \
+    --library drugbank.smi \
+    --pocket_dist 8.0 \
+    --out_dir ./screening/
+
+# Re-rank and merge multiple runs
+python rerank_molecules.py \
+    --target target.pdb \
+    --site "A:340-355" \
+    --results_dir ./denovo/,./drugbank/,./ppi/ \
+    --out_dir ./merged/ \
+    --min_qed 0.5 --max_sa 4.0
+```
+
+### Molecule Design Modes
+
+| Mode | Per tool | ~Time (3 tools + Uni-Dock) |
+|------|----------|---------------------------|
+| test | 100 | ~25 min |
+| standard | 1000 | ~2-4 h |
+| production | 5000 | ~1-2 days |
+
+Mode only affects de novo tool counts. Library screening always docks all molecules.
+
+### Molecule Scoring
+
+```
+combined_score = 0.40 * vina_norm + 0.35 * QED + 0.15 * SA_norm + 0.10 * pocket_fit_norm
+```
+
+- **Vina norm:** `clip(-vina / 12, 0, 1)` — scores outside [-12, -1] are artifacts (NaN)
+- **QED:** Quantitative estimate of drug-likeness (0-1)
+- **SA norm:** `1 - (SA - 1) / 9` — lower SA = easier to make
+- **Pocket fit norm:** `clip((fit - 0.5) / 0.5, 0, 1)` — fraction of molecule atoms within 4A of pocket
+
+Docking: Uni-Dock GPU in chunks of 25 via `--ligand_index`. Per-chunk CPU Vina fallback if GPU segfaults (isolates problematic molecules). DrugBank: ~80% GPU, ~20% CPU fallback.
+
+### Molecule Properties (Design Detail)
+
+Each molecule in `rankings.csv` includes:
+
+**Physicochemical:** Chemical formula, MW, heavy atoms, rotatable bonds, HBD, HBA, TPSA, molar refractivity, Fsp3, LogP
+
+**Medicinal chemistry:** Lipinski rule (pass/fail), Veber rule (pass/fail), Lipinski violations, QED (druglikeness), SA score (synthesis complexity)
+
+### Molecule Output Structure
+
+```
+{out_dir}/
+├── pocketflow/        Generated SDFs
+├── molcraft/          Generated SDFs + ref_ligand.sdf
+├── pocketxmol/        Generated SDFs + task config
+├── library/           Screened library SDFs (if --library)
+├── pocket/            Extracted pocket PDB + center info
+├── scoring/           Docked poses (Uni-Dock or Vina)
+├── top_molecules/     Top N SDFs + SMILES + view_molecules.pml
+├── rankings.csv       All molecules ranked with scores + properties
+└── dashboard.png      Score distribution plots
+```
+
+### Compound Libraries
+
+| Library | Compounds | MW range | Use case |
+|---------|-----------|----------|----------|
+| PPI compounds | 5,000 | 300-500 | Protein-protein interaction inhibitors |
+| PPI test set | 500 | 300-500 | Quick testing |
+| ZINC fragments | 5,000 | 150-300 | Fragment-based discovery |
+| DrugBank Open | 12,309 | varied | Approved drug repurposing |
+| ChEMBL 35 | 1.6M | varied | Large-scale screening |
+
 ## GPU Notes
 
 - Use `CUDA_VISIBLE_DEVICES=N` to pin GPU. Do **not** combine with `--device cuda:0` — the `--device` flag overrides `CUDA_VISIBLE_DEVICES` and can cause all runs to land on GPU 0.
@@ -553,10 +660,10 @@ Browser-based interface for the full pipeline lifecycle: launch, monitor, analyz
 
 ```bash
 conda activate boltz
-uvicorn binderflow.web.app:app --host 0.0.0.0 --port 8080
+uvicorn proteaflow.web.app:app --host 0.0.0.0 --port 8080
 
 # Background mode
-nohup uvicorn binderflow.web.app:app --host 0.0.0.0 --port 8080 > /tmp/binderflow_server.log 2>&1 &
+nohup uvicorn proteaflow.web.app:app --host 0.0.0.0 --port 8080 > /tmp/proteaflow_server.log 2>&1 &
 ```
 
 ### Features
@@ -583,7 +690,7 @@ nohup uvicorn binderflow.web.app:app --host 0.0.0.0 --port 8080 > /tmp/binderflo
 
 - FastAPI + uvicorn, Jinja2 templates, SQLite (aiosqlite)
 - Frontend: Tailwind CSS, AG Grid, Plotly.js, 3Dmol.js (all via CDN, no build step)
-- Database stored locally per machine at `/tmp/binderflow/<hostname>/binderflow.db`
+- Database stored locally per machine at `/tmp/proteaflow/<hostname>/proteaflow.db`
 - Multi-machine support — same codebase on shared storage, independent DBs
 
 ## Desktop Browser (alternative)
@@ -592,7 +699,7 @@ PyQt6 desktop application with the same analysis features as the web results bro
 
 ```bash
 pip install PyQt6 matplotlib pandas numpy
-python -m binderflow.binder_browser --results_dir ./output/
+python -m proteaflow.binder_browser --results_dir ./output/
 ```
 
 ### Features
@@ -648,7 +755,7 @@ NetSolP requires ONNX models downloaded from [DTU](https://services.healthtech.d
 
 ## License
 
-The **binderflow** pipeline code is released under the MIT License. See [LICENSE](LICENSE).
+The **proteaflow** pipeline code is released under the MIT License. See [LICENSE](LICENSE).
 
 Each design tool has its own license — you are responsible for complying with them:
 

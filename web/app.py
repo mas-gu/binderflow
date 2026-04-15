@@ -1,4 +1,4 @@
-"""BinderFlow Web — FastAPI application."""
+"""ProteaFlow Web — FastAPI application."""
 
 import os
 from contextlib import asynccontextmanager
@@ -14,7 +14,7 @@ from .routes import pages, api_gpus, api_jobs, api_results, api_stream, api_mana
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Redirect to /login if no binderflow_user cookie.
+    """Redirect to /login if no proteaflow_user cookie.
 
     Skips /login, /static, and /api paths.
     """
@@ -22,7 +22,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path.startswith("/login") or path.startswith("/static") or path.startswith("/api"):
             return await call_next(request)
-        username = request.cookies.get("binderflow_user")
+        username = request.cookies.get("proteaflow_user")
         if not username:
             return RedirectResponse("/login", status_code=302)
         return await call_next(request)
@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="BinderFlow", lifespan=lifespan)
+app = FastAPI(title="ProteaFlow", lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

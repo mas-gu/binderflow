@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from . import database
-from .config import PIPELINE_SCRIPT, RERANK_SCRIPT, PROJECT_ROOT, PYTHON_BIN
+from .config import PIPELINE_SCRIPT, RERANK_SCRIPT, MOLECULE_SCRIPT, RERANK_MOLECULE_SCRIPT, PROJECT_ROOT, PYTHON_BIN
 
 
 _processes: dict[str, "asyncio.subprocess.Process"] = {}
@@ -28,6 +28,10 @@ def build_generate_cmd(params: dict) -> list[str]:
     ]
     if params.get("reprediction"):
         cmd.append("--reprediction")
+    if params.get("n_tag"):
+        cmd.extend(["--n_tag", params["n_tag"]])
+    if params.get("c_tag"):
+        cmd.extend(["--c_tag", params["c_tag"]])
     if params.get("plip_top"):
         cmd.extend(["--plip_top", str(params["plip_top"])])
     if params.get("esmfold_plddt_threshold"):
@@ -83,10 +87,68 @@ def build_rerank_cmd(params: dict) -> list[str]:
         # Remove --rank_only if it was added (shouldn't be, but safety check)
         if "--rank_only" in cmd:
             cmd.remove("--rank_only")
+    if params.get("n_tag"):
+        cmd.extend(["--n_tag", params["n_tag"]])
+    if params.get("c_tag"):
+        cmd.extend(["--c_tag", params["c_tag"]])
     if params.get("esmfold_plddt_threshold"):
         cmd.extend(["--esmfold_plddt_threshold", str(params["esmfold_plddt_threshold"])])
     if params.get("top_n"):
         cmd.extend(["--top_n", str(params["top_n"])])
+    return cmd
+
+
+def build_molecule_cmd(params: dict) -> list[str]:
+    """Build generate_molecules.py CLI command."""
+    cmd = [
+        PYTHON_BIN, str(MOLECULE_SCRIPT),
+        "--target", params["target_file"],
+        "--site", params["site"],
+        "--out_dir", params["out_dir"],
+        "--device", "cuda:0",
+    ]
+    if params.get("tools"):
+        cmd += ["--tools", params["tools"]]
+    if params.get("mode"):
+        cmd += ["--mode", params["mode"]]
+    if params.get("library") and params["library"].strip():
+        cmd += ["--library", params["library"]]
+    if params.get("no_vina"):
+        cmd += ["--no_vina"]
+    if params.get("score_weights"):
+        cmd += ["--score_weights", params["score_weights"]]
+    if params.get("pocket_dist"):
+        cmd += ["--pocket_dist", str(params["pocket_dist"])]
+    if params.get("max_atoms"):
+        cmd += ["--max_atoms", str(params["max_atoms"])]
+    if params.get("top_n"):
+        cmd += ["--top_n", str(params["top_n"])]
+    return cmd
+
+
+def build_mol_rerank_cmd(params: dict) -> list[str]:
+    """Build rerank_molecules.py CLI command."""
+    cmd = [
+        PYTHON_BIN, str(RERANK_MOLECULE_SCRIPT),
+        "--target", params["target_file"],
+        "--site", params["site"],
+        "--out_dir", params["out_dir"],
+    ]
+    if params.get("results_dir"):
+        cmd += ["--results_dir", params["results_dir"]]
+    if params.get("score_weights"):
+        cmd += ["--score_weights", params["score_weights"]]
+    if params.get("pocket_dist"):
+        cmd += ["--pocket_dist", str(params["pocket_dist"])]
+    if params.get("top_n"):
+        cmd += ["--top_n", str(params["top_n"])]
+    # Hard filters
+    for flag in ["min_qed", "max_sa", "min_pocket_fit", "min_vina", "max_vina"]:
+        val = params.get(flag)
+        if val is not None and str(val).strip():
+            cmd += [f"--{flag}", str(val)]
+    if params.get("mw_range") and str(params["mw_range"]).strip():
+        cmd += ["--mw_range", str(params["mw_range"])]
     return cmd
 
 
@@ -95,6 +157,10 @@ async def launch_job(job_id: str, params: dict, gpu_id: int):
     job_type = params.get("job_type", "generate")
     if job_type == "rerank":
         cmd = build_rerank_cmd(params)
+    elif job_type == "molecule":
+        cmd = build_molecule_cmd(params)
+    elif job_type == "mol_rerank":
+        cmd = build_mol_rerank_cmd(params)
     else:
         cmd = build_generate_cmd(params)
 
@@ -129,9 +195,11 @@ async def launch_job(job_id: str, params: dict, gpu_id: int):
 
 async def _wait_for_job(job_id: str, proc, log_fh):
     """Wait for subprocess to finish and update DB."""
-    returncode = await proc.wait()
-    log_fh.close()
-    _processes.pop(job_id, None)
+    try:
+        returncode = await proc.wait()
+    finally:
+        log_fh.close()
+        _processes.pop(job_id, None)
 
     status = "completed" if returncode == 0 else "failed"
     error_msg = None

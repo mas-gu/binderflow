@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}BinderFlow — Monitor: {{ job.name }}{% endblock %}
+{% block title %}ProteaFlow — Monitor: {{ job.name }}{% endblock %}
 
 {% block content %}
 <!-- Job Header -->
@@ -43,6 +43,24 @@
         <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
             <h3 class="text-sm font-semibold text-slate-300 mb-3">Tool Progress</h3>
             <div id="tool-progress" class="space-y-2">
+                {% if job.job_type == 'mol_rerank' %}
+                <!-- Molecule rerank steps -->
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-slate-500"></span>
+                    <span class="text-xs text-slate-400 flex-1">Collecting molecules</span>
+                    <span class="text-xs text-slate-500" id="progress-collect">—</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-teal-600"></span>
+                    <span class="text-xs text-slate-400 flex-1">Pocket fit</span>
+                    <span class="text-xs text-slate-500" id="progress-pocketfit">—</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-blue-600"></span>
+                    <span class="text-xs text-slate-400 flex-1">Ranking</span>
+                    <span class="text-xs text-slate-500" id="progress-ranking">—</span>
+                </div>
+                {% else %}
                 {% for tool in (job.tools or '').split(',') %}
                 {% if tool %}
                 <div class="flex items-center gap-2">
@@ -54,15 +72,17 @@
                 </div>
                 {% endif %}
                 {% endfor %}
+                {% endif %}
+                {% if job.job_type not in ('molecule', 'mol_rerank') %}
                 <div class="border-t border-slate-800 pt-2 mt-2">
                     <div class="flex items-center gap-2">
                         <span class="w-3 h-3 rounded-full bg-cyan-600"></span>
-                        <span class="text-xs text-slate-400 flex-1">ESMFold</span>
+                        <span class="text-xs text-slate-400 flex-1">Boltz-2 monomer</span>
                         <span class="text-xs text-slate-500" id="progress-esmfold">—</span>
                     </div>
                     <div class="flex items-center gap-2">
                         <span class="w-3 h-3 rounded-full bg-indigo-600"></span>
-                        <span class="text-xs text-slate-400 flex-1">Boltz-2</span>
+                        <span class="text-xs text-slate-400 flex-1">Boltz-2 complex</span>
                         <span class="text-xs text-slate-500" id="progress-boltz">—</span>
                     </div>
                     <div class="flex items-center gap-2">
@@ -71,6 +91,20 @@
                         <span class="text-xs text-slate-500" id="progress-rosetta">—</span>
                     </div>
                 </div>
+                {% else %}
+                <div class="border-t border-slate-800 pt-2 mt-2">
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-amber-600"></span>
+                        <span class="text-xs text-slate-400 flex-1">Vina Docking</span>
+                        <span class="text-xs text-slate-500" id="progress-vina">—</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-teal-600"></span>
+                        <span class="text-xs text-slate-400 flex-1">Scoring</span>
+                        <span class="text-xs text-slate-500" id="progress-scoring">—</span>
+                    </div>
+                </div>
+                {% endif %}
             </div>
         </div>
         <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
@@ -85,7 +119,7 @@
                     <span id="design-count" class="text-slate-200">--</span>
                 </div>
                 <div class="flex justify-between">
-                    <span class="text-slate-400">ESMFold pass:</span>
+                    <span class="text-slate-400">Monomer pass:</span>
                     <span id="esmfold-pass" class="text-slate-200">--</span>
                 </div>
             </div>
@@ -141,7 +175,8 @@
                 stepEl.textContent = match[1];
                 // Show skip button for generation tools only
                 const toolName = match[1].toLowerCase().replace(/[^a-z_]/g, '');
-                const genTools = ['rfdiffusion', 'boltzgen', 'bindcraft', 'pxdesign', 'proteina', 'proteina_complexa'];
+                const genTools = ['rfdiffusion', 'boltzgen', 'bindcraft', 'pxdesign', 'proteina', 'proteina_complexa',
+                                  'pocketflow', 'molcraft', 'pocketxmol', 'pocket2mol', 'decompdiff'];
                 if (genTools.includes(toolName)) {
                     updateSkipButtons(toolName);
                 } else {
@@ -159,9 +194,9 @@
             }
         } else if (line.includes('FAILED') || line.includes('Error') || line.includes('Traceback')) {
             span.className = 'text-red-400';
-        } else if (line.includes('DONE') || line.includes('designs collected')) {
+        } else if (line.includes('DONE') || line.includes('designs collected') || line.includes('molecules scored')) {
             span.className = 'text-green-400';
-        } else if (line.includes('passed') || line.includes('OK')) {
+        } else if (line.includes('passed') || line.includes('OK') || line.includes('SDF files')) {
             span.className = 'text-green-300';
         }
 
@@ -172,7 +207,7 @@
             const cur = parseInt(cnt.textContent) || 0;
             cnt.textContent = cur + parseInt(designMatch[1]);
         }
-        const esmMatch = line.match(/ESMFold: (\d+)\/(\d+) passed/);
+        const esmMatch = line.match(/Boltz(?:-2)? monomer: (\d+)\/(\d+) passed/);
         if (esmMatch) {
             document.getElementById('esmfold-pass').textContent = esmMatch[1] + '/' + esmMatch[2];
         }
@@ -188,7 +223,7 @@
                 el.innerHTML = `<span class="text-blue-400">${done}/${total}</span> <span class="text-slate-600">(${pct}%)</span>`;
                 el.className = 'text-xs';
             }
-            // Also update ESMFold pass counter from progress lines
+            // Also update monomer pass counter from progress lines
             if (toolId === 'esmfold') {
                 const passMatch = line.match(/(\d+) passed/);
                 if (passMatch) {
@@ -209,10 +244,40 @@
             }
         }
 
-        // Boltz-2 step detection
-        if (line.includes('Boltz-2') || line.includes('validate_boltz') || line.includes('boltz predict')) {
+        // Boltz-2 monomer step detection
+        if (line.includes('Boltz-2 monomer') || line.includes('Boltz monomer')) {
+            const el = document.getElementById('progress-esmfold');
+            if (el && el.textContent === '—') { el.textContent = 'running...'; el.className = 'text-xs text-blue-400'; }
+        }
+        // Boltz-2 complex step detection (only match complex-specific lines)
+        if (line.includes('STEP: Boltz-2') && !line.includes('monomer') || line.includes('Boltz validation:')) {
             const el = document.getElementById('progress-boltz');
             if (el && el.textContent === '—') { el.textContent = 'running...'; el.className = 'text-xs text-blue-400'; }
+        }
+
+        // Molecule pipeline progress
+        const sdfMatch = line.match(/(\w+): collected (\d+) SDF files/);
+        if (sdfMatch) {
+            const toolId = sdfMatch[1].toLowerCase();
+            const el = document.getElementById('progress-' + toolId);
+            if (el) { el.textContent = sdfMatch[2] + ' SDFs ✓'; el.className = 'text-xs text-green-400'; }
+        }
+        const vinaMatch = line.match(/Vina parallel docking: (\d+) molecules on (\d+) CPUs/);
+        if (vinaMatch) {
+            const el = document.getElementById('progress-vina');
+            if (el) { el.textContent = vinaMatch[1] + ' mols / ' + vinaMatch[2] + ' CPUs'; el.className = 'text-xs text-blue-400'; }
+        }
+        const scoredMatch = line.match(/(\d+) valid unique molecules scored/);
+        if (scoredMatch) {
+            const el = document.getElementById('progress-scoring');
+            if (el) { el.textContent = scoredMatch[1] + ' scored ✓'; el.className = 'text-xs text-green-400'; }
+            const vinaEl = document.getElementById('progress-vina');
+            if (vinaEl && vinaEl.className.includes('blue')) { vinaEl.textContent += ' ✓'; vinaEl.className = 'text-xs text-green-400'; }
+        }
+        const molCountMatch = line.match(/Total: (\d+) molecules to rank/);
+        if (molCountMatch) {
+            const cnt = document.getElementById('design-count');
+            if (cnt) cnt.textContent = molCountMatch[1];
         }
 
         // Tool status — map log names to sidebar element IDs

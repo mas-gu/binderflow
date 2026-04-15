@@ -12,6 +12,146 @@ from binders_pipeline_env.binder_browser.data.loader import load_rankings
 router = APIRouter(prefix="/api/results", tags=["results"])
 
 
+def _compute_contacts(pocket_pdb: str, ligand_sdf: str,
+                       hbond_dist: float = 3.5, contact_dist: float = 4.5,
+                       salt_dist: float = 4.0, pi_dist: float = 5.5) -> list[dict]:
+    """
+    Compute protein-ligand contacts using BioPython distance calculations.
+
+    Returns list of dicts with: type, protein_atom, protein_residue, protein_coords,
+    ligand_atom, ligand_coords, distance
+    """
+    from Bio.PDB import PDBParser
+    from rdkit import Chem
+    import numpy as np
+
+    # Parse protein
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("pocket", pocket_pdb)
+    model = structure[0]
+
+    # Parse ligand
+    suppl = Chem.SDMolSupplier(ligand_sdf, removeHs=True)
+    mol = None
+    for m in suppl:
+        if m is not None:
+            mol = m
+            break
+    if mol is None:
+        return []
+
+    conf = mol.GetConformer()
+
+    # Donor/acceptor atom definitions
+    hbond_donors = {'N', 'O', 'S'}  # atoms that can donate H-bonds
+    hbond_acceptors = {'N', 'O', 'S', 'F'}  # atoms that can accept H-bonds
+    hydrophobic_atoms = {'C'}  # simplified
+    charged_pos = {'NZ', 'NH1', 'NH2', 'ND1', 'NE2'}  # Lys, Arg, His
+    charged_neg = {'OD1', 'OD2', 'OE1', 'OE2'}  # Asp, Glu
+    aromatic_res = {'PHE', 'TYR', 'TRP', 'HIS'}
+
+    contacts = []
+    seen = set()  # avoid duplicate contacts per residue
+
+    for chain in model:
+        for residue in chain:
+            if residue.id[0] != ' ':  # skip water/heteroatoms
+                continue
+            res_name = residue.get_resname()
+            res_id = f"{chain.id}:{res_name}{residue.id[1]}"
+
+            for atom in residue:
+                prot_coord = atom.get_vector().get_array()
+                prot_elem = atom.element.strip().upper() if atom.element else atom.name[0]
+                atom_name = atom.get_name()
+
+                for i in range(mol.GetNumAtoms()):
+                    lig_atom = mol.GetAtomWithIdx(i)
+                    lig_elem = lig_atom.GetSymbol()
+                    lig_coord = conf.GetAtomPosition(i)
+                    lig_xyz = np.array([lig_coord.x, lig_coord.y, lig_coord.z])
+
+                    dist = float(np.linalg.norm(prot_coord - lig_xyz))
+
+                    # H-bond detection
+                    if dist <= hbond_dist:
+                        is_donor_acceptor = (
+                            (prot_elem in hbond_donors and lig_elem in hbond_acceptors) or
+                            (prot_elem in hbond_acceptors and lig_elem in hbond_donors)
+                        )
+                        if is_donor_acceptor:
+                            key = (res_id, 'hbond', i)
+                            if key not in seen:
+                                seen.add(key)
+                                contacts.append({
+                                    "type": "hbond",
+                                    "protein_residue": res_id,
+                                    "protein_atom": atom_name,
+                                    "protein_coords": prot_coord.tolist(),
+                                    "ligand_atom": f"{lig_elem}{i}",
+                                    "ligand_coords": lig_xyz.tolist(),
+                                    "distance": round(dist, 2),
+                                })
+
+                    # Salt bridge detection
+                    if dist <= salt_dist:
+                        prot_charged = atom_name in charged_pos or atom_name in charged_neg
+                        lig_charged = lig_atom.GetFormalCharge() != 0
+                        if prot_charged and lig_charged:
+                            key = (res_id, 'salt_bridge', i)
+                            if key not in seen:
+                                seen.add(key)
+                                contacts.append({
+                                    "type": "salt_bridge",
+                                    "protein_residue": res_id,
+                                    "protein_atom": atom_name,
+                                    "protein_coords": prot_coord.tolist(),
+                                    "ligand_atom": f"{lig_elem}{i}",
+                                    "ligand_coords": lig_xyz.tolist(),
+                                    "distance": round(dist, 2),
+                                })
+
+                    # Hydrophobic contact detection
+                    if dist <= contact_dist and dist > hbond_dist:
+                        if prot_elem == 'C' and lig_elem == 'C':
+                            # Only report one hydrophobic contact per residue
+                            key = (res_id, 'hydrophobic')
+                            if key not in seen:
+                                seen.add(key)
+                                contacts.append({
+                                    "type": "hydrophobic",
+                                    "protein_residue": res_id,
+                                    "protein_atom": atom_name,
+                                    "protein_coords": prot_coord.tolist(),
+                                    "ligand_atom": f"{lig_elem}{i}",
+                                    "ligand_coords": lig_xyz.tolist(),
+                                    "distance": round(dist, 2),
+                                })
+
+                    # Pi-stacking (simplified: aromatic residue near aromatic ligand atom)
+                    if dist <= pi_dist and res_name in aromatic_res and lig_atom.GetIsAromatic():
+                        if prot_elem == 'C' and atom_name in ('CG', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ'):
+                            key = (res_id, 'pi_stacking')
+                            if key not in seen:
+                                seen.add(key)
+                                contacts.append({
+                                    "type": "pi_stacking",
+                                    "protein_residue": res_id,
+                                    "protein_atom": atom_name,
+                                    "protein_coords": prot_coord.tolist(),
+                                    "ligand_atom": f"{lig_elem}{i}",
+                                    "ligand_coords": lig_xyz.tolist(),
+                                    "distance": round(dist, 2),
+                                })
+
+    # Sort by type then distance
+    contacts.sort(key=lambda c: (
+        {'hbond': 0, 'salt_bridge': 1, 'pi_stacking': 2, 'hydrophobic': 3}.get(c['type'], 9),
+        c['distance']
+    ))
+    return contacts
+
+
 def _parse_rankings(csv_path: Path) -> list[dict]:
     """Load rankings CSV via binder_browser loader (adds pDockQ, tier, tool)."""
     df = load_rankings(csv_path)
@@ -117,12 +257,126 @@ async def get_structure(job_id: str, path: str):
     if not job:
         raise HTTPException(404, "Job not found")
 
-    file_path = Path(job["out_dir"]) / "top_designs" / path
-    if not file_path.exists() or ".." in path:
+    base_dir = (Path(job["out_dir"]) / "top_designs").resolve()
+    file_path = (base_dir / path).resolve()
+    if not file_path.exists() or ".." in path or not str(file_path).startswith(str(base_dir)):
         raise HTTPException(404, "Structure file not found")
 
     media = "chemical/x-cif" if file_path.suffix == ".cif" else "chemical/x-pdb"
     return FileResponse(file_path, media_type=media)
+
+
+@router.get("/{job_id}/molecule/{path:path}")
+async def get_molecule_file(job_id: str, path: str):
+    """Serve molecule SDF or pocket PDB files for the 3D viewer."""
+    job = await database.get_job_any_machine(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if ".." in path:
+        raise HTTPException(400, "Invalid path")
+
+    out_dir = Path(job["out_dir"]).resolve()
+    # Search in top_molecules/, pocket/, and tool output dirs (for reranked runs)
+    search_dirs = ["top_molecules", "pocket"]
+    # Also search tool subdirs for original/docked SDFs
+    for d in out_dir.iterdir():
+        if d.is_dir() and d.name not in ("top_molecules", "pocket", "scoring", "library"):
+            search_dirs.append(d.name)
+    # Also search scoring/ for docked poses
+    search_dirs.append("scoring")
+
+    for subdir in search_dirs:
+        base_dir = (out_dir / subdir).resolve()
+        if not base_dir.exists():
+            continue
+        # Direct match
+        file_path = (base_dir / path).resolve()
+        if file_path.exists() and str(file_path).startswith(str(base_dir)):
+            if file_path.suffix == ".sdf":
+                return FileResponse(file_path, media_type="chemical/x-mdl-sdfile")
+            elif file_path.suffix == ".pdb":
+                return FileResponse(file_path, media_type="chemical/x-pdb")
+            else:
+                return FileResponse(file_path)
+        # Recursive search (for nested tool output dirs)
+        for match in base_dir.rglob(path):
+            if match.is_file() and str(match.resolve()).startswith(str(base_dir)):
+                if match.suffix == ".sdf":
+                    return FileResponse(match, media_type="chemical/x-mdl-sdfile")
+                elif match.suffix == ".pdb":
+                    return FileResponse(match, media_type="chemical/x-pdb")
+                else:
+                    return FileResponse(match)
+
+    # Last resort: look up sdf_path from rankings.csv (reranked runs with absolute paths)
+    csv_path = out_dir / "rankings.csv"
+    if csv_path.exists() and path.endswith(".sdf"):
+        design_id = path.replace("_docked.sdf", "").replace(".sdf", "")
+        import csv
+        with open(csv_path) as f:
+            for row in csv.DictReader(f):
+                if row.get("design_id") == design_id:
+                    sdf = row.get("sdf_path", "")
+                    if sdf and Path(sdf).exists():
+                        return FileResponse(sdf, media_type="chemical/x-mdl-sdfile")
+                    # Try non-docked version
+                    sdf_orig = sdf.replace("_docked.sdf", ".sdf")
+                    if sdf_orig != sdf and Path(sdf_orig).exists():
+                        return FileResponse(sdf_orig, media_type="chemical/x-mdl-sdfile")
+                    break
+
+    raise HTTPException(404, "File not found")
+
+
+@router.get("/{job_id}/contacts/{design_id}")
+async def get_molecule_contacts(job_id: str, design_id: str):
+    """Compute protein-ligand contacts for a docked molecule."""
+    job = await database.get_job_any_machine(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    out_dir = Path(job["out_dir"])
+    pocket_pdb = out_dir / "pocket" / "pocket.pdb"
+
+    # Find the molecule SDF (try docked first, then original)
+    # Search top_molecules/ and all tool subdirs (for reranked runs)
+    mol_sdf = None
+    search_dirs = [out_dir / "top_molecules"]
+    for d in out_dir.iterdir():
+        if d.is_dir() and d.name not in ("top_molecules", "pocket", "scoring", "library"):
+            search_dirs.append(d)
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for name in [f"{design_id}_docked.sdf", f"{design_id}.sdf"]:
+            matches = list(search_dir.rglob(name))
+            if matches:
+                mol_sdf = matches[0]
+                break
+        if mol_sdf:
+            break
+
+    # Fallback: look up sdf_path from rankings.csv (reranked runs)
+    if not mol_sdf:
+        csv_path = out_dir / "rankings.csv"
+        if csv_path.exists():
+            import csv
+            with open(csv_path) as f:
+                for row in csv.DictReader(f):
+                    if row.get("design_id") == design_id:
+                        sdf = row.get("sdf_path", "")
+                        if sdf and Path(sdf).exists():
+                            mol_sdf = Path(sdf)
+                        break
+
+    if not pocket_pdb.exists() or not mol_sdf:
+        return {"contacts": [], "error": "Structure files not found"}
+
+    try:
+        contacts = _compute_contacts(str(pocket_pdb), str(mol_sdf))
+        return {"contacts": contacts}
+    except Exception as e:
+        return {"contacts": [], "error": str(e)}
 
 
 @router.get("/{job_id}/plip")

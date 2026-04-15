@@ -1,11 +1,22 @@
 {% extends "base.html" %}
-{% block title %}BinderFlow — Rerank{% endblock %}
+{% block title %}ProteaFlow — Rerank{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-bold mb-6">Rerank Existing Results</h1>
+<h1 class="text-2xl font-bold mb-6" id="page-title">Rerank Binder Results</h1>
 
 <form id="rerank-form" class="space-y-6" enctype="multipart/form-data">
-    <!-- Input -->
+    <!-- Rerank Type Selector -->
+    <div class="flex gap-2 mb-6">
+        <button type="button" id="type-binder" class="px-6 py-2 rounded-lg font-semibold bg-blue-600 text-white" onclick="switchRerank('rerank')">
+            Binder Rerank
+        </button>
+        <button type="button" id="type-molecule" class="px-6 py-2 rounded-lg font-semibold bg-slate-700 text-slate-400" onclick="switchRerank('mol_rerank')">
+            Molecule Rerank
+        </button>
+    </div>
+    <input type="hidden" name="job_type" id="job_type" value="rerank">
+
+    <!-- Input (shared) -->
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
         <h2 class="text-lg font-semibold mb-4 text-slate-200">Input</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -15,25 +26,41 @@
                        class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
                        placeholder="pdia6_rerank_strict">
             </div>
-            <div>
-                <label class="block text-sm text-slate-400 mb-1">Results directory (path on server)</label>
-                <input type="text" name="results_dir" required id="results_dir_input"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
-                       placeholder="/path/to/previous/run/output/"
+            <div class="md:col-span-2">
+                <label class="block text-sm text-slate-400 mb-1" id="results-dir-label">Selected runs</label>
+                <!-- Selected jobs (chips) -->
+                <div id="selected-jobs" class="flex flex-wrap gap-2 mb-2 min-h-[32px]"></div>
+                <!-- Hidden input for form submission -->
+                <input type="hidden" name="results_dir" required id="results_dir_input"
                        value="{{ prefill_results_dir or '' }}">
                 {% if completed_jobs %}
-                <div class="mt-1">
-                    <label class="text-xs text-slate-500">Or pick a previous job:</label>
-                    <select id="prev-job-select" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs mt-1">
-                        <option value="">-- Select --</option>
-                        {% for j in completed_jobs %}
-                        <option value="{{ j.out_dir }}" data-target="{{ j.target_file }}" data-site="{{ j.site }}" data-project="{{ j.project or '' }}">
-                            {{ j.name }} ({{ j.out_dir }})
-                        </option>
-                        {% endfor %}
-                    </select>
+                <div class="mt-1 bg-slate-800 border border-slate-600 rounded max-h-48 overflow-y-auto">
+                    {% for j in completed_jobs %}
+                    <label class="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-700 cursor-pointer text-xs border-b border-slate-700 job-item {% if j.job_type == 'molecule' %}job-molecule{% else %}job-binder{% endif %}"
+                           data-type="{{ j.job_type or 'generate' }}"
+                           data-dir="{{ j.out_dir }}"
+                           data-target="{{ j.target_file }}"
+                           data-site="{{ j.site }}"
+                           data-project="{{ j.project or '' }}">
+                        <input type="checkbox" class="job-checkbox border-slate-500"
+                               value="{{ j.out_dir }}"
+                               {% if j.out_dir in (prefill_results_dir or '').split(',') %}checked{% endif %}>
+                        <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold
+                            {% if j.job_type in ('molecule', 'mol_rerank') %}bg-amber-900 text-amber-300{% else %}bg-blue-900 text-blue-300{% endif %}">
+                            {{ j.job_type or 'binder' }}
+                        </span>
+                        <span class="text-slate-300">{{ j.name }}</span>
+                        <span class="text-slate-500 truncate">{{ j.out_dir.split('/')[-1] }}</span>
+                    </label>
+                    {% endfor %}
                 </div>
                 {% endif %}
+                <!-- Manual path input -->
+                <div class="mt-2 flex gap-2">
+                    <input type="text" id="manual_dir_input" placeholder="Or paste server path..."
+                           class="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-xs">
+                    <button type="button" onclick="addManualDir()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1.5 rounded">Add</button>
+                </div>
             </div>
             <div>
                 <label class="block text-sm text-slate-400 mb-1">Target PDB (upload)</label>
@@ -60,110 +87,188 @@
             </div>
             <div>
                 <label class="block text-sm text-slate-400 mb-1">Output suffix</label>
-                <input type="text" name="rr_suffix" value="nocys_aa30_sif40"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
-                       placeholder="nocys_aa30_sif40">
+                <input type="text" name="rr_suffix" id="rr_suffix" value="nocys_aa30_sif40"
+                       class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
             </div>
         </div>
     </div>
 
-    <!-- Scoring & Filters -->
-    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
-        <h2 class="text-lg font-semibold mb-4 text-slate-200">Scoring & Filters</h2>
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Score weights</label>
-                <input type="text" name="score_weights" value="0.3,0.6,0.1"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+    <!-- ============================================================ -->
+    <!-- BINDER SCORING & FILTERS -->
+    <!-- ============================================================ -->
+    <div id="binder-section">
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+            <h2 class="text-lg font-semibold mb-4 text-slate-200">Scoring & Filters</h2>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Score weights (pLDDT, iPTM, dG)</label>
+                    <input type="text" name="score_weights" id="binder_score_weights" value="0.3,0.6,0.1"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">SS bias</label>
+                    <select name="ss_bias" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        <option value="balanced" selected>balanced</option>
+                        <option value="helix">helix</option>
+                        <option value="beta">beta</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">PLIP top</label>
+                    <input type="number" name="plip_top" value="10"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
             </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">SS bias</label>
-                <select name="ss_bias" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-                    <option value="balanced" selected>balanced</option>
-                    <option value="helix">helix</option>
-                    <option value="beta">beta</option>
-                </select>
+
+            <h3 class="text-sm font-medium text-slate-300 mb-2">Quality Filters</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="no_cys" checked class="border-slate-600">
+                    <span class="text-sm">No cysteine</span>
+                </label>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Max AA fraction</label>
+                    <input type="number" name="max_aa_fraction" step="0.01" value="0.30"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Min Sc</label>
+                    <input type="number" name="min_sc" step="0.01" placeholder="0.45"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Max refolding RMSD</label>
+                    <input type="number" name="max_refolding_rmsd" step="0.1" value="2.5"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Max interface KE</label>
+                    <input type="number" name="max_interface_ke" step="0.05" placeholder="0.25"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
             </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">PLIP top</label>
-                <input type="number" name="plip_top" value="10"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+
+            <h3 class="text-sm font-medium text-slate-300 mb-2">Geometric Filters</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Min SIF</label>
+                    <input type="number" name="min_site_interface_fraction" step="0.05" value="0.40"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Max site dist (A)</label>
+                    <input type="number" name="max_site_dist" step="0.5" placeholder="8.0"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Min site fraction</label>
+                    <input type="number" name="min_site_fraction" step="0.1" placeholder="0.4"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
             </div>
         </div>
 
-        <h3 class="text-sm font-medium text-slate-300 mb-2">Quality Filters</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" name="no_cys" checked class="border-slate-600">
-                <span class="text-sm">No cysteine</span>
-            </label>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Max AA fraction</label>
-                <input type="number" name="max_aa_fraction" step="0.01" value="0.30"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+        <!-- Reprediction (binder only) -->
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6 mt-6">
+            <h2 class="text-lg font-semibold mb-4 text-slate-200">Reprediction (optional, requires GPU)</h2>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="reprediction" id="reprediction_cb" class="border-slate-600">
+                    <span class="text-sm">Enable Boltz-2 reprediction</span>
+                </label>
+                <div id="plddt-threshold-div" class="hidden">
+                    <label class="block text-xs text-slate-500 mb-1">Min monomer pLDDT</label>
+                    <input type="number" name="esmfold_plddt_threshold" value="80" step="5" min="0" max="100"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div id="gpu-select-div" class="hidden">
+                    <label class="block text-xs text-slate-500 mb-1">GPU</label>
+                    <select name="gpu_id" id="gpu_select"
+                            class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        {% for gpu in gpus %}
+                        <option value="{{ gpu.index }}">
+                            GPU {{ gpu.index }}: {{ gpu.name }}
+                            ({{ gpu.memory_used_mb }}/{{ gpu.memory_total_mb }} MB){% if gpu.busy %} — BUSY{% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
             </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Min Sc</label>
-                <input type="number" name="min_sc" step="0.01" placeholder="0.45"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Max refolding RMSD</label>
-                <input type="number" name="max_refolding_rmsd" step="0.1" value="2.5"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Max interface KE</label>
-                <input type="number" name="max_interface_ke" step="0.05" placeholder="0.25"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-        </div>
-
-        <h3 class="text-sm font-medium text-slate-300 mb-2">Geometric Filters</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Min SIF</label>
-                <input type="number" name="min_site_interface_fraction" step="0.05" value="0.40"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Max site dist (A)</label>
-                <input type="number" name="max_site_dist" step="0.5" placeholder="8.0"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Min site fraction</label>
-                <input type="number" name="min_site_fraction" step="0.1" placeholder="0.4"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+            <div id="tag-inputs-div" class="hidden mt-4 grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">N-terminal tag</label>
+                    <input type="text" name="n_tag" placeholder="e.g. MHHHHHH"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm font-mono uppercase">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">C-terminal tag</label>
+                    <input type="text" name="c_tag" placeholder="e.g. HHHHHH"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm font-mono uppercase">
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- Reprediction -->
-    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
-        <h2 class="text-lg font-semibold mb-4 text-slate-200">Reprediction (optional, requires GPU)</h2>
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" name="reprediction" id="reprediction_cb" class="border-slate-600">
-                <span class="text-sm">Enable Boltz-2 reprediction</span>
-            </label>
-            <div id="plddt-threshold-div" class="hidden">
-                <label class="block text-xs text-slate-500 mb-1">Min ESMFold pLDDT</label>
-                <input type="number" name="esmfold_plddt_threshold" value="80" step="5" min="0" max="100"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+    <!-- ============================================================ -->
+    <!-- MOLECULE SCORING & FILTERS -->
+    <!-- ============================================================ -->
+    <div id="molecule-section" class="hidden">
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+            <h2 class="text-lg font-semibold mb-4 text-slate-200">Molecule Scoring</h2>
+            <p class="text-xs text-slate-500 mb-4">No GPU needed. Vina scores from original run are reused. Comma-separate results_dir to merge multiple runs.</p>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Score weights (Vina, QED, SA, PocketFit)</label>
+                    <input type="text" name="mol_score_weights" id="mol_score_weights" value="{{ score_weights or '0.40,0.35,0.15,0.10' }}"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Pocket distance (A)</label>
+                    <input type="number" name="pocket_dist" step="0.5" value="8.0"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Top N molecules</label>
+                    <input type="number" name="mol_top_n" value="50"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
             </div>
-            <div id="gpu-select-div" class="hidden">
-                <label class="block text-xs text-slate-500 mb-1">GPU</label>
-                <select name="gpu_id" id="gpu_select"
-                        class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-                    {% for gpu in gpus %}
-                    <option value="{{ gpu.index }}">
-                        GPU {{ gpu.index }}: {{ gpu.name }}
-                        ({{ gpu.memory_used_mb }}/{{ gpu.memory_total_mb }} MB){% if gpu.busy %} — IN USE{% endif %}
-                        {% if gpu.busy %} — BUSY{% endif %}
-                    </option>
-                    {% endfor %}
-                </select>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6 mt-6">
+            <h2 class="text-lg font-semibold mb-4 text-slate-200">Hard Filters</h2>
+            <p class="text-xs text-slate-500 mb-3">Leave blank to skip. Molecules failing any filter are excluded.</p>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Min QED</label>
+                    <input type="number" name="min_qed" step="0.05" placeholder="e.g. 0.5"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Max SA score</label>
+                    <input type="number" name="max_sa" step="0.5" placeholder="e.g. 4.0"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Min pocket fit</label>
+                    <input type="number" name="min_pocket_fit" step="0.05" placeholder="e.g. 0.5"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">MW range (min,max)</label>
+                    <input type="text" name="mw_range" placeholder="e.g. 150,600"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Min Vina</label>
+                    <input type="number" name="min_vina" step="0.5" placeholder="e.g. -10"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Max Vina</label>
+                    <input type="number" name="max_vina" step="0.5" placeholder="e.g. -3"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
             </div>
         </div>
     </div>
@@ -174,18 +279,128 @@
                 class="bg-amber-600 hover:bg-amber-500 text-white px-8 py-3 rounded-lg font-semibold text-lg">
             Run Rerank
         </button>
-        <button type="button" id="dryrun-btn"
-                class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-6 py-3 rounded-lg font-medium">
-            Dry Run
-        </button>
     </div>
-    <pre id="dryrun-output" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-4 text-xs text-green-400 overflow-x-auto whitespace-pre-wrap"></pre>
 </form>
 {% endblock %}
 
 {% block scripts %}
 <script>
-    // Drag-drop file upload
+    // ── Type toggle ──────────────────────────────────────────────
+    function switchRerank(type) {
+        document.getElementById('job_type').value = type;
+        const isMol = type === 'mol_rerank';
+        document.getElementById('binder-section').classList.toggle('hidden', isMol);
+        document.getElementById('molecule-section').classList.toggle('hidden', !isMol);
+        document.getElementById('type-binder').className = isMol
+            ? 'px-6 py-2 rounded-lg font-semibold bg-slate-700 text-slate-400'
+            : 'px-6 py-2 rounded-lg font-semibold bg-blue-600 text-white';
+        document.getElementById('type-molecule').className = isMol
+            ? 'px-6 py-2 rounded-lg font-semibold bg-amber-600 text-white'
+            : 'px-6 py-2 rounded-lg font-semibold bg-slate-700 text-slate-400';
+        document.getElementById('page-title').textContent = isMol
+            ? 'Rerank Molecule Results' : 'Rerank Binder Results';
+        document.getElementById('results-dir-label').textContent = isMol
+            ? 'Selected runs (check multiple to merge)' : 'Selected run';
+        document.getElementById('rr_suffix').value = isMol
+            ? 'qed50_sa4' : 'nocys_aa30_sif40';
+        // Show only relevant jobs in the list
+        document.querySelectorAll('.job-binder').forEach(el => el.style.display = isMol ? 'none' : '');
+        document.querySelectorAll('.job-molecule').forEach(el => el.style.display = isMol ? '' : 'none');
+    }
+
+    // Auto-switch to molecule if prefill, otherwise default to binder (filter job list)
+    {% if prefill_type == 'mol_rerank' %}
+    switchRerank('mol_rerank');
+    {% else %}
+    switchRerank('rerank');
+    {% endif %}
+
+    // ── Job selection (checkboxes → chips + hidden input) ───────
+    const selectedDirs = new Set();
+    const manualDirs = new Set();
+
+    function updateSelectedJobs() {
+        const chipsDiv = document.getElementById('selected-jobs');
+        const hiddenInput = document.getElementById('results_dir_input');
+        const allDirs = [...selectedDirs, ...manualDirs];
+        hiddenInput.value = allDirs.join(',');
+
+        // Render chips
+        chipsDiv.innerHTML = allDirs.map(dir => {
+            const name = dir.split('/').pop();
+            const isManual = manualDirs.has(dir);
+            return `<span class="inline-flex items-center gap-1 bg-slate-700 text-slate-200 text-xs px-2 py-1 rounded">
+                ${name}
+                <button type="button" onclick="removeDir('${dir}', ${isManual})" class="text-slate-400 hover:text-red-400 ml-1">&times;</button>
+            </span>`;
+        }).join('');
+
+        // Auto-fill target/site from first selected job
+        if (allDirs.length > 0) {
+            const firstCb = document.querySelector(`.job-checkbox[value="${allDirs[0]}"]`);
+            if (firstCb) {
+                const label = firstCb.closest('.job-item');
+                if (label) {
+                    document.getElementById('target_path_input').value = label.dataset.target || '';
+                    document.getElementById('site_input').value = label.dataset.site || '';
+                    if (!document.getElementById('project_input').value)
+                        document.getElementById('project_input').value = label.dataset.project || '';
+                }
+                // Auto-detect binder vs molecule from first selection
+                const jtype = firstCb.closest('.job-item')?.dataset.type || 'generate';
+                if (jtype === 'molecule' || jtype === 'mol_rerank') switchRerank('mol_rerank');
+            }
+        }
+    }
+
+    function removeDir(dir, isManual) {
+        if (isManual) {
+            manualDirs.delete(dir);
+        } else {
+            selectedDirs.delete(dir);
+            const cb = document.querySelector(`.job-checkbox[value="${dir}"]`);
+            if (cb) cb.checked = false;
+        }
+        updateSelectedJobs();
+    }
+
+    function addManualDir() {
+        const input = document.getElementById('manual_dir_input');
+        const dir = input.value.trim();
+        if (dir && !selectedDirs.has(dir) && !manualDirs.has(dir)) {
+            manualDirs.add(dir);
+            input.value = '';
+            updateSelectedJobs();
+        }
+    }
+
+    // Checkbox change handlers
+    document.querySelectorAll('.job-checkbox').forEach(cb => {
+        cb.addEventListener('change', () => {
+            if (cb.checked) selectedDirs.add(cb.value);
+            else selectedDirs.delete(cb.value);
+            updateSelectedJobs();
+        });
+    });
+
+    // Enter key on manual input
+    document.getElementById('manual_dir_input')?.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); addManualDir(); }
+    });
+
+    // Initialize from prefill
+    {% if prefill_results_dir %}
+    '{{ prefill_results_dir }}'.split(',').forEach(d => {
+        d = d.trim();
+        if (!d) return;
+        const cb = document.querySelector(`.job-checkbox[value="${d}"]`);
+        if (cb) { cb.checked = true; selectedDirs.add(d); }
+        else { manualDirs.add(d); }
+    });
+    updateSelectedJobs();
+    {% endif %}
+
+    // ── Drag-drop ────────────────────────────────────────────────
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
     const dropText = document.getElementById('drop-text');
@@ -193,72 +408,76 @@
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('border-blue-500'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500'));
     dropZone.addEventListener('drop', e => {
-        e.preventDefault();
-        dropZone.classList.remove('border-blue-500');
-        if (e.dataTransfer.files.length) {
-            fileInput.files = e.dataTransfer.files;
-            dropText.textContent = e.dataTransfer.files[0].name;
-        }
+        e.preventDefault(); dropZone.classList.remove('border-blue-500');
+        if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; dropText.textContent = e.dataTransfer.files[0].name; }
     });
-    fileInput.addEventListener('change', () => {
-        if (fileInput.files.length) dropText.textContent = fileInput.files[0].name;
-    });
+    fileInput.addEventListener('change', () => { if (fileInput.files.length) dropText.textContent = fileInput.files[0].name; });
 
-    // Auto-fill from previous job selection
-    document.getElementById('prev-job-select')?.addEventListener('change', (e) => {
-        const opt = e.target.selectedOptions[0];
-        if (opt.value) {
-            document.getElementById('results_dir_input').value = opt.value;
-            document.getElementById('target_path_input').value = opt.dataset.target || '';
-            document.getElementById('site_input').value = opt.dataset.site || '';
-            document.getElementById('project_input').value = opt.dataset.project || '';
-        }
-    });
-
-    // Toggle GPU selector + pLDDT threshold
-    document.getElementById('reprediction_cb').addEventListener('change', (e) => {
+    // ── Reprediction toggle ──────────────────────────────────────
+    document.getElementById('reprediction_cb')?.addEventListener('change', (e) => {
         document.getElementById('gpu-select-div').classList.toggle('hidden', !e.target.checked);
         document.getElementById('plddt-threshold-div').classList.toggle('hidden', !e.target.checked);
+        document.getElementById('tag-inputs-div').classList.toggle('hidden', !e.target.checked);
     });
 
-    // Form submit
+    // ── Form submit ──────────────────────────────────────────────
     document.getElementById('rerank-form').addEventListener('submit', async (e) => {
         e.preventDefault();
         const form = e.target;
         const formData = new FormData();
-
+        const jobType = document.getElementById('job_type').value;
         const suffix = form.rr_suffix.value || 'reranked';
         const resultsDir = form.results_dir.value;
-        const outDir = resultsDir + '/reranked_' + suffix;
 
         formData.append('job_name', form.job_name.value);
-        formData.append('job_type', 'rerank');
+        formData.append('job_type', jobType);
         formData.append('project', form.project.value || 'unassigned');
         formData.append('target_path', form.target_path.value);
         formData.append('site', form.site.value);
-        formData.append('length', '60-80');
-        formData.append('tools', 'rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa');
-        formData.append('mode', 'test');
-        formData.append('score_weights', form.score_weights.value);
-        formData.append('ss_bias', form.ss_bias.value);
-        formData.append('plip_top', form.plip_top.value || '10');
-        formData.append('top_n', '50');
         formData.append('results_dir', resultsDir);
-        formData.append('out_dir_override', outDir);
 
-        const repred = document.getElementById('reprediction_cb')?.checked || false;
-        formData.append('reprediction', repred);
-        formData.append('gpu_id', repred ? form.gpu_id.value : '0');
-        if (repred && form.esmfold_plddt_threshold?.value) {
-            formData.append('esmfold_plddt_threshold', form.esmfold_plddt_threshold.value);
+        if (jobType === 'mol_rerank') {
+            // Molecule rerank
+            const outDir = resultsDir.split(',')[0].trim() + '/reranked_' + suffix;
+            formData.append('out_dir_override', outDir);
+            formData.append('score_weights', form.mol_score_weights.value);
+            formData.append('pocket_dist', form.pocket_dist.value);
+            formData.append('top_n', form.mol_top_n.value || '50');
+            formData.append('gpu_id', '0');
+            formData.append('reprediction', '');
+            formData.append('length', '');
+            formData.append('tools', '');
+            formData.append('mode', '');
+            // Molecule filters
+            ['min_qed', 'max_sa', 'min_pocket_fit', 'mw_range', 'min_vina', 'max_vina'].forEach(name => {
+                const val = form[name]?.value;
+                if (val) formData.append(name, val);
+            });
+        } else {
+            // Binder rerank
+            const outDir = resultsDir + '/reranked_' + suffix;
+            formData.append('out_dir_override', outDir);
+            formData.append('score_weights', form.elements['score_weights'].value);
+            formData.append('ss_bias', form.ss_bias.value);
+            formData.append('plip_top', form.plip_top?.value || '10');
+            formData.append('top_n', '50');
+            formData.append('length', '60-80');
+            formData.append('tools', 'rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa');
+            formData.append('mode', 'test');
+            const repred = document.getElementById('reprediction_cb')?.checked || false;
+            formData.append('reprediction', repred);
+            formData.append('gpu_id', repred ? form.gpu_id.value : '0');
+            if (repred && form.esmfold_plddt_threshold?.value)
+                formData.append('esmfold_plddt_threshold', form.esmfold_plddt_threshold.value);
+            if (repred && form.n_tag?.value) formData.append('n_tag', form.n_tag.value.trim());
+            if (repred && form.c_tag?.value) formData.append('c_tag', form.c_tag.value.trim());
+            if (form.no_cys?.checked) formData.append('no_cys', 'true');
+            ['max_aa_fraction', 'min_sc', 'max_refolding_rmsd', 'max_interface_ke',
+             'min_site_interface_fraction', 'max_site_dist', 'min_site_fraction'].forEach(name => {
+                const val = form[name]?.value;
+                if (val) formData.append(name, val);
+            });
         }
-
-        if (form.no_cys.checked) formData.append('no_cys', 'true');
-        ['max_aa_fraction', 'min_sc', 'max_refolding_rmsd', 'max_interface_ke',
-         'min_site_interface_fraction', 'max_site_dist', 'min_site_fraction'].forEach(name => {
-            const val = form[name]?.value;
-            if (val) formData.append(name, val);
-        });
 
         try {
             const resp = await fetch('/api/jobs', { method: 'POST', body: formData });
@@ -271,34 +490,6 @@
         } catch (err) {
             alert('Network error: ' + err.message);
         }
-    });
-
-    // Dry run
-    document.getElementById('dryrun-btn').addEventListener('click', () => {
-        const form = document.getElementById('rerank-form');
-        const parts = ['python rerank_binders.py'];
-        parts.push('--target ' + form.target_path.value);
-        parts.push('--site "' + form.site.value + '"');
-        parts.push('--results_dir ' + form.results_dir.value);
-        parts.push('--out_dir ' + form.results_dir.value + '/reranked_' + form.rr_suffix.value);
-        parts.push('--rank_only');
-        parts.push('--score_weights ' + form.score_weights.value);
-        parts.push('--ss_bias ' + form.ss_bias.value);
-        if (form.no_cys.checked) parts.push('--no_cys');
-        ['max_aa_fraction', 'min_sc', 'max_refolding_rmsd', 'max_interface_ke',
-         'min_site_interface_fraction', 'max_site_dist', 'min_site_fraction'].forEach(f => {
-            if (form[f]?.value) parts.push('--' + f + ' ' + form[f].value);
-        });
-        if (form.plip_top.value) parts.push('--plip_top ' + form.plip_top.value);
-        if (document.getElementById('reprediction_cb')?.checked) {
-            parts.push('--reprediction');
-            const plddt = form.esmfold_plddt_threshold?.value;
-            if (plddt && plddt !== '80') parts.push('--esmfold_plddt_threshold ' + plddt);
-        }
-
-        const out = document.getElementById('dryrun-output');
-        out.textContent = parts.join(' \\\n  ');
-        out.classList.remove('hidden');
     });
 </script>
 {% endblock %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}BinderFlow — Dashboard{% endblock %}
+{% block title %}ProteaFlow — Dashboard{% endblock %}
 
 {% block content %}
 <!-- GPU Status -->
@@ -133,7 +133,10 @@
             <tbody>
                 {% for job in jobs %}
                 <tr class="border-b border-slate-800 hover:bg-slate-900">
-                    <td class="py-2 px-3 font-medium max-w-[200px] truncate" title="{{ job.name }}">{{ job.name }}</td>
+                    <td class="py-2 px-3 font-medium max-w-[200px] truncate" title="Double-click to rename">
+                        <span class="job-name-display cursor-pointer hover:text-blue-400" data-job-id="{{ job.id }}" data-status="{{ job.status }}"
+                              ondblclick="startRename(this)">{{ job.name }}</span>
+                    </td>
                     <td class="py-2 px-3 text-blue-400 text-xs">{{ job.project or '' }}</td>
                     <td class="py-2 px-3 text-slate-500 text-xs">{{ job.username or '' }}</td>
                     <td class="py-2 px-3 text-slate-400">{{ job.job_type }}</td>
@@ -232,6 +235,40 @@
         if (!confirm('Hide this job from the list?')) return;
         await fetch('/api/jobs/' + jobId + '/archive', { method: 'POST' });
         btn.closest('tr').remove();
+    }
+
+    function startRename(el) {
+        if (el.dataset.status === 'running') return;  // don't rename running jobs
+        const jobId = el.dataset.jobId;
+        const oldName = el.textContent.trim();
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = oldName;
+        input.className = 'bg-slate-800 border border-blue-500 rounded px-1 py-0 text-sm text-white w-full';
+        el.replaceWith(input);
+        input.focus();
+        input.select();
+
+        async function save() {
+            const newName = input.value.trim();
+            if (!newName || newName === oldName) {
+                input.replaceWith(el);
+                return;
+            }
+            const form = new FormData();
+            form.append('name', newName);
+            const resp = await fetch(`/api/jobs/${jobId}/rename`, { method: 'PATCH', body: form });
+            if (resp.ok) {
+                el.textContent = newName;
+                el.title = newName;
+            }
+            input.replaceWith(el);
+        }
+        input.addEventListener('blur', save);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); save(); }
+            if (e.key === 'Escape') { input.replaceWith(el); }
+        });
     }
 
     // Auto-refresh GPU status every 15s

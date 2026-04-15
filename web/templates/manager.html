@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}BinderFlow — Data Manager{% endblock %}
+{% block title %}ProteaFlow — Data Manager{% endblock %}
 
 {% block content %}
 <!-- Header -->
@@ -117,7 +117,9 @@
                     data-local="{{ 'true' if j.machine == hostname else 'false' }}">
                     <td class="py-2 px-3"><input type="checkbox" class="row-check" value="{{ j.id }}" onchange="updateBulkBar()"></td>
                     <td class="py-2 px-3">
-                        <div class="font-medium text-slate-200 truncate max-w-[200px]" title="{{ j.name }}">{{ j.name }}</div>
+                        <div class="font-medium text-slate-200 truncate max-w-[200px] cursor-pointer hover:text-blue-400"
+                             title="Double-click to rename" data-job-id="{{ j.id }}" data-status="{{ j.status }}"
+                             ondblclick="startRename(this)">{{ j.name }}</div>
                         <div class="text-xs text-slate-500 truncate max-w-[200px]" title="{{ j.out_dir or '' }}">{{ j.out_dir or '' }}</div>
                     </td>
                     <td class="py-2 px-3"><span class="text-blue-400 text-xs">{{ j.project or '-' }}</span></td>
@@ -522,6 +524,41 @@ async function bulkAction(action) {
         alert(`Processed ${data.processed}, errors:\n${data.errors.join('\n')}`);
     }
     location.reload();
+}
+
+// -------- Rename --------
+function startRename(el) {
+    if (el.dataset.status === 'running') return;
+    const jobId = el.dataset.jobId;
+    const oldName = el.textContent.trim();
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldName;
+    input.className = 'bg-slate-800 border border-blue-500 rounded px-1 py-0 text-sm text-white w-full';
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+
+    async function save() {
+        const newName = input.value.trim();
+        if (!newName || newName === oldName) {
+            input.replaceWith(el);
+            return;
+        }
+        const form = new FormData();
+        form.append('name', newName);
+        const resp = await fetch(`/api/jobs/${jobId}/rename`, { method: 'PATCH', body: form });
+        if (resp.ok) {
+            el.textContent = newName;
+            el.title = newName;
+        }
+        input.replaceWith(el);
+    }
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        if (e.key === 'Escape') { input.replaceWith(el); }
+    });
 }
 
 // -------- Single actions --------

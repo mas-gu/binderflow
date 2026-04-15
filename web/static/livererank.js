@@ -1,5 +1,5 @@
 /**
- * BinderFlow Live Rerank — Three.js 3D visualization + real-time filtering.
+ * ProteaFlow Live Rerank — Three.js 3D visualization + real-time filtering.
  *
  * Expects globals injected by Jinja2:
  *   JOB_ID, TOOL_COLORS, JOB_SITE

@@ -1,5 +1,5 @@
 /**
- * BinderFlow Results — unified JS for rankings, scatter, radar, tools, detail, rerank.
+ * ProteaFlow Results — unified JS for rankings, scatter, radar, tools, detail, rerank.
  *
  * Expects these globals injected by Jinja2:
  *   JOB_ID, TOOL_COLORS, SCATTER_PRESETS, HIGHER_BETTER, LOWER_BETTER,

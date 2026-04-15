@@ -34,7 +34,7 @@ _SHARED_DIR = Path(_cfg.shared_data_dir)
 _SHARED_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR = _SHARED_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = _SHARED_DIR / f"binderflow_{_HOST}.db"
+DB_PATH = _SHARED_DIR / f"proteaflow_{_HOST}.db"
 SHARED_JSON = _SHARED_DIR / "shared.json"
 HOSTNAME = _HOST
 
@@ -66,4 +66,40 @@ TOOL_DESCRIPTIONS = {
     "pxdesign": "DiT diffusion + AF2-IG design",
     "proteina": "Flow-based backbone generation",
     "proteina_complexa": "Target-conditioned full-atom design",
+}
+
+# ── Molecule design constants ────────────────────────────────────────────────
+MOLECULE_SCRIPT = PROJECT_ROOT / "binders_pipeline_env" / "generate_molecules.py"
+MOLECULE_OUTPUTS_BASE = Path("/Colossus/software/webserver/outputs_mol")
+
+MOLECULE_TOOLS = ["pocketflow", "molcraft", "pocketxmol"]
+MOLECULE_TOOL_COLORS = {
+    "pocketflow": "#E53935",
+    "molcraft":   "#7C3AED",
+    "pocketxmol": "#0EA5E9",
+    "library":    "#FF9800",
+}
+MOLECULE_TOOL_DESCRIPTIONS = {
+    "pocketflow": "Autoregressive flow-based 3D generation",
+    "molcraft":   "Bayesian flow network, ICML 2024 (fast, high validity)",
+    "pocketxmol": "Foundation model, Cell 2026 (SOTA, from Pocket2Mol authors)",
+}
+MOLECULE_MODE_ESTIMATES = {
+    "test": "~10 min (1 GPU)",
+    "standard": "~2-4 hours (1 GPU)",
+    "production": "~1-2 days (1 GPU)",
+}
+MOLECULE_DEFAULT_TOOLS = ["pocketflow", "molcraft", "pocketxmol"]
+MOLECULE_SCORE_WEIGHTS = "0.40,0.35,0.15,0.10"  # Vina, QED, SA, PocketFit
+RERANK_MOLECULE_SCRIPT = PROJECT_ROOT / "binders_pipeline_env" / "rerank_molecules.py"
+
+# Available compound libraries — paths resolved from config.yaml (libraries_dir)
+_lib = _cfg.web("libraries_dir")
+COMPOUND_LIBRARIES = {
+    "": "(none — de novo only)",
+    f"{_lib}/zinc_fda_approved/zinc_fda_approved.smi": "ZINC FDA Approved (103 drugs)",
+    f"{_lib}/drugbank_open/drugbank_open_structures.smi": "DrugBank Open (12,309 compounds)",
+    f"{_lib}/ppi_compounds/ppi_compounds_combined.smi": "PPI Compounds (5,001)",
+    f"{_lib}/ppi_compounds/ppi_500.smi": "PPI Test Set (500)",
+    f"{_lib}/zinc_fragments/zinc_fragments_combined.smi": "ZINC Fragments (5,000)",
 }

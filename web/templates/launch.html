@@ -1,10 +1,21 @@
 {% extends "base.html" %}
-{% block title %}BinderFlow — Launch Job{% endblock %}
+{% block title %}ProteaFlow — Launch Job{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-bold mb-6">Launch Binder Design</h1>
+<h1 class="text-2xl font-bold mb-6" id="page-title">Launch Binder Design</h1>
 
 <form id="launch-form" class="space-y-6" enctype="multipart/form-data">
+    <!-- Job Type Selector -->
+    <div class="flex gap-2 mb-6">
+        <button type="button" id="type-binder" class="px-6 py-2 rounded-lg font-semibold bg-blue-600 text-white" onclick="switchJobType('generate')">
+            Binder Design
+        </button>
+        <button type="button" id="type-molecule" class="px-6 py-2 rounded-lg font-semibold bg-slate-700 text-slate-400" onclick="switchJobType('molecule')">
+            Small Molecule Design
+        </button>
+    </div>
+    <input type="hidden" name="job_type" id="job_type" value="generate">
+
     <!-- Section 1: Target & Basic Settings -->
     <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
         <h2 class="text-lg font-semibold mb-4 text-slate-200">Target & Site</h2>
@@ -62,7 +73,7 @@
                        class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
                        placeholder="A:373-374,379-384">
             </div>
-            <div>
+            <div id="length-field">
                 <label class="block text-sm text-slate-400 mb-1">Binder Length</label>
                 <input type="text" name="length" value="{{ default_length }}"
                        class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
@@ -71,153 +82,266 @@
         </div>
     </div>
 
-    <!-- Section 2: Tools & Mode -->
-    <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
-        <h2 class="text-lg font-semibold mb-4 text-slate-200">Pipeline Settings</h2>
+    <!-- ═══ BINDER-SPECIFIC SECTIONS ═══ -->
+    <div id="binder-section" class="space-y-6">
+        <!-- Section 2: Tools & Mode -->
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+            <h2 class="text-lg font-semibold mb-4 text-slate-200">Pipeline Settings</h2>
 
-        <!-- Tools -->
-        <div class="mb-4">
-            <label class="block text-sm text-slate-400 mb-2">Design Tools</label>
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {% for tool in default_tools %}
-                <label class="flex items-center gap-2 bg-slate-800 rounded p-2 cursor-pointer hover:bg-slate-750">
-                    <input type="checkbox" name="tool_{{ tool }}" value="{{ tool }}" checked
-                           class="rounded border-slate-600">
-                    <span class="inline-block w-3 h-3 rounded-full" style="background: {{ tool_colors[tool] }}"></span>
-                    <span class="text-sm">{{ tool }}</span>
-                    <span class="text-xs text-slate-500 ml-auto">{{ tool_descriptions[tool] }}</span>
-                </label>
-                {% endfor %}
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <!-- Mode -->
-            <div>
-                <label class="block text-sm text-slate-400 mb-2">Mode</label>
-                <div class="space-y-1">
-                    {% for m in ['test', 'standard', 'production'] %}
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="mode" value="{{ m }}"
-                               {% if m == default_mode %}checked{% endif %}
-                               class="border-slate-600">
-                        <span class="text-sm">{{ m }}</span>
-                        <span class="text-xs text-slate-500 ml-auto">{{ mode_estimates[m] }}</span>
+            <!-- Tools -->
+            <div class="mb-4">
+                <label class="block text-sm text-slate-400 mb-2">Design Tools</label>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    {% for tool in default_tools %}
+                    <label class="flex items-center gap-2 bg-slate-800 rounded p-2 cursor-pointer hover:bg-slate-750">
+                        <input type="checkbox" name="tool_{{ tool }}" value="{{ tool }}" checked
+                               class="rounded border-slate-600">
+                        <span class="inline-block w-3 h-3 rounded-full" style="background: {{ tool_colors[tool] }}"></span>
+                        <span class="text-sm">{{ tool }}</span>
+                        <span class="text-xs text-slate-500 ml-auto">{{ tool_descriptions[tool] }}</span>
                     </label>
                     {% endfor %}
                 </div>
             </div>
 
-            <!-- SS Bias -->
-            <div>
-                <label class="block text-sm text-slate-400 mb-2">SS Bias</label>
-                <div class="space-y-1">
-                    {% for b in ['balanced', 'helix', 'beta'] %}
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="ss_bias" value="{{ b }}"
-                               {% if b == default_ss_bias %}checked{% endif %}
-                               class="border-slate-600">
-                        <span class="text-sm">{{ b }}</span>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- Mode -->
+                <div>
+                    <label class="block text-sm text-slate-400 mb-2">Mode</label>
+                    <div class="space-y-1">
+                        {% for m in ['test', 'standard', 'production'] %}
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="mode" value="{{ m }}"
+                                   {% if m == default_mode %}checked{% endif %}
+                                   class="border-slate-600">
+                            <span class="text-sm">{{ m }}</span>
+                            <span class="text-xs text-slate-500 ml-auto">{{ mode_estimates[m] }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- SS Bias -->
+                <div>
+                    <label class="block text-sm text-slate-400 mb-2">SS Bias</label>
+                    <div class="space-y-1">
+                        {% for b in ['balanced', 'helix', 'beta'] %}
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="ss_bias" value="{{ b }}"
+                                   {% if b == default_ss_bias %}checked{% endif %}
+                                   class="border-slate-600">
+                            <span class="text-sm">{{ b }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Quick options -->
+                <div>
+                    <label class="block text-sm text-slate-400 mb-2">Options</label>
+                    <div class="space-y-1">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="reprediction" id="reprediction_cb" class="border-slate-600">
+                            <span class="text-sm">Reprediction (Boltz-2 all tools)</span>
+                        </label>
+                        <div id="launch-tag-inputs-div" class="hidden grid grid-cols-2 gap-2 mt-1">
+                            <input type="text" name="n_tag" placeholder="N-tag (e.g. MHHHHHH)"
+                                   class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs font-mono uppercase">
+                            <input type="text" name="c_tag" placeholder="C-tag (e.g. HHHHHH)"
+                                   class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs font-mono uppercase">
+                        </div>
+                        <!-- no_cys is rerank-only, not here -->
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm">Score weights:</label>
+                            <input type="text" name="score_weights" value="{{ default_score_weights }}"
+                                   class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm w-28">
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm">PLIP top:</label>
+                            <input type="number" name="plip_top" value="10"
+                                   class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm w-16">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Designs per tool/mode table -->
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-slate-400 mb-2">Designs per tool &amp; mode</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-center">
+                    <thead class="text-slate-500 border-b border-slate-700">
+                        <tr>
+                            <th class="text-left py-1 px-2">Tool</th>
+                            <th class="py-1 px-2">test</th>
+                            <th class="py-1 px-2">standard</th>
+                            <th class="py-1 px-2">production</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-slate-300" id="designs-table">
+                        <tr><td class="text-left py-1 px-2" style="color:#E53935">RFdiffusion</td><td>20</td><td>200</td><td>500</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#00BCD4">RFdiffusion3</td><td>20 (&times;4)</td><td>100 (&times;4)</td><td>250 (&times;4)</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#43A047">BoltzGen</td><td>50</td><td>500</td><td>2,000</td></tr>
+                        <tr id="bc-row"><td class="text-left py-1 px-2" style="color:#1E88E5">BindCraft</td><td id="bc-test">5</td><td id="bc-std">10</td><td id="bc-prod">20</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#FB8C00">PXDesign</td><td>20</td><td>200</td><td>500</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#8E24AA">Proteina</td><td>20</td><td>200</td><td>500</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#00897B">Proteina Complexa</td><td>20</td><td>200</td><td>500</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p id="bc-note" class="text-xs text-slate-600 mt-1 hidden">* BindCraft count reduced (filters active)</p>
+        </div>
+
+        <!-- Section 3: Generate-only advanced options -->
+        <details class="bg-slate-900 border border-slate-700 rounded-lg">
+            <summary class="p-4 cursor-pointer text-slate-300 hover:text-white font-medium">
+                Advanced Options (generate)
+            </summary>
+            <div class="px-6 pb-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Monomer pLDDT threshold</label>
+                    <input type="number" name="esmfold_plddt_threshold" step="1" placeholder="80"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Max site dist (A)</label>
+                    <input type="number" name="max_site_dist" step="0.5" placeholder="15.0"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Min site fraction</label>
+                    <input type="number" name="min_site_fraction" step="0.1" placeholder="0.0"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Filter site PAE</label>
+                    <input type="number" name="filter_site_pae" step="1" placeholder="15.0"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Top N designs</label>
+                    <input type="number" name="top_n" value="50"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">BindCraft filters</label>
+                    <select name="bindcraft_filters" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        <option value="no_filters" selected>no_filters (accept all -- default)</option>
+                        <option value="relaxed">relaxed (light quality gate)</option>
+                        <option value="kras_relaxed">kras_relaxed (very relaxed)</option>
+                        <option value="default">default (strict -- may stall)</option>
+                        <option value="peptide">peptide (for peptide binders)</option>
+                        <option value="peptide_relaxed">peptide_relaxed (relaxed peptide)</option>
+                    </select>
+                </div>
+            </div>
+        </details>
+    </div>
+
+    <!-- ═══ MOLECULE-SPECIFIC SECTIONS ═══ -->
+    <div id="molecule-section" class="hidden space-y-6">
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+            <h2 class="text-lg font-semibold mb-4 text-slate-200">Molecule Design Settings</h2>
+
+            <!-- Molecule Tools -->
+            <div class="mb-4">
+                <label class="block text-sm text-slate-400 mb-2">De Novo Tools</label>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    {% for tool in molecule_tools %}
+                    <label class="flex items-center gap-2 bg-slate-800 rounded p-2 cursor-pointer hover:bg-slate-750">
+                        <input type="checkbox" name="mol_tool_{{ tool }}" value="{{ tool }}"
+                               {{ 'checked' if tool in molecule_default_tools else '' }}
+                               class="rounded border-slate-600">
+                        <span class="inline-block w-3 h-3 rounded-full" style="background: {{ molecule_tool_colors[tool] }}"></span>
+                        <span class="text-sm">{{ tool }}</span>
+                        <span class="text-xs text-slate-500 ml-auto">{{ molecule_tool_descriptions[tool] }}</span>
                     </label>
                     {% endfor %}
                 </div>
             </div>
 
-            <!-- Quick options -->
-            <div>
-                <label class="block text-sm text-slate-400 mb-2">Options</label>
-                <div class="space-y-1">
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" name="reprediction" class="border-slate-600">
-                        <span class="text-sm">Reprediction (Boltz-2 all tools)</span>
+            <!-- Compound Libraries (multi-select) -->
+            <div class="mb-4">
+                <label class="block text-sm text-slate-400 mb-2">Compound Libraries (optional — check one or more)</label>
+                <div class="bg-slate-800 border border-slate-600 rounded max-h-40 overflow-y-auto">
+                    {% for path, label in compound_libraries.items() %}
+                    <label class="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-700 cursor-pointer text-xs border-b border-slate-700">
+                        <input type="checkbox" class="lib-checkbox border-slate-500" value="{{ path }}">
+                        <span class="text-slate-300">{{ label }}</span>
                     </label>
-                    <!-- no_cys is rerank-only, not here -->
-                    <div class="flex items-center gap-2">
-                        <label class="text-sm">Score weights:</label>
-                        <input type="text" name="score_weights" value="{{ default_score_weights }}"
-                               class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm w-28">
+                    {% endfor %}
+                </div>
+                <input type="hidden" name="library" id="library_hidden" value="">
+            </div>
+
+            <!-- Molecule Options Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- Mode -->
+                <div>
+                    <label class="block text-sm text-slate-400 mb-2">Mode</label>
+                    <div class="space-y-1">
+                        {% for m in ['test', 'standard', 'production'] %}
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="mol_mode" value="{{ m }}"
+                                   {{ 'checked' if m == 'test' else '' }}
+                                   class="border-slate-600">
+                            <span class="text-sm">{{ m }}</span>
+                            <span class="text-xs text-slate-500 ml-auto">{{ molecule_mode_estimates[m] }}</span>
+                        </label>
+                        {% endfor %}
                     </div>
-                    <div class="flex items-center gap-2">
-                        <label class="text-sm">PLIP top:</label>
-                        <input type="number" name="plip_top" value="10"
-                               class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm w-16">
-                    </div>
+                </div>
+
+                <!-- Pocket & Atom settings -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Pocket Distance (A)</label>
+                    <input type="number" name="pocket_dist" value="8.0" step="0.5" min="4" max="15"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm mt-1">
+                    <label class="block text-xs text-slate-400 mt-3 mb-1">Max Heavy Atoms</label>
+                    <input type="number" name="max_atoms" value="35" min="10" max="80"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm mt-1">
+                </div>
+
+                <!-- Scoring & options -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Score Weights (Vina,QED,SA)</label>
+                    <input type="text" name="mol_score_weights" value="{{ molecule_score_weights }}"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm mt-1">
+                    <label class="flex items-center gap-2 text-sm mt-3 cursor-pointer">
+                        <input type="checkbox" name="no_vina" id="no_vina_cb" class="border-slate-600">
+                        Skip Vina re-docking (faster)
+                    </label>
+                    <label class="block text-xs text-slate-400 mt-3 mb-1">Top N molecules</label>
+                    <input type="number" name="mol_top_n" value="50" min="5" max="500"
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm mt-1">
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Designs per tool/mode table -->
-    <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
-        <h3 class="text-sm font-medium text-slate-400 mb-2">Designs per tool &amp; mode</h3>
-        <div class="overflow-x-auto">
-            <table class="w-full text-xs text-center">
-                <thead class="text-slate-500 border-b border-slate-700">
-                    <tr>
-                        <th class="text-left py-1 px-2">Tool</th>
-                        <th class="py-1 px-2">test</th>
-                        <th class="py-1 px-2">standard</th>
-                        <th class="py-1 px-2">production</th>
-                    </tr>
-                </thead>
-                <tbody class="text-slate-300" id="designs-table">
-                    <tr><td class="text-left py-1 px-2" style="color:#E53935">RFdiffusion</td><td>20</td><td>200</td><td>500</td></tr>
-                    <tr><td class="text-left py-1 px-2" style="color:#00BCD4">RFdiffusion3</td><td>20 (×4)</td><td>100 (×4)</td><td>250 (×4)</td></tr>
-                    <tr><td class="text-left py-1 px-2" style="color:#43A047">BoltzGen</td><td>50</td><td>500</td><td>2,000</td></tr>
-                    <tr id="bc-row"><td class="text-left py-1 px-2" style="color:#1E88E5">BindCraft</td><td id="bc-test">5</td><td id="bc-std">10</td><td id="bc-prod">20</td></tr>
-                    <tr><td class="text-left py-1 px-2" style="color:#FB8C00">PXDesign</td><td>20</td><td>200</td><td>500</td></tr>
-                    <tr><td class="text-left py-1 px-2" style="color:#8E24AA">Proteina</td><td>20</td><td>200</td><td>500</td></tr>
-                    <tr><td class="text-left py-1 px-2" style="color:#00897B">Proteina Complexa</td><td>20</td><td>200</td><td>500</td></tr>
-                </tbody>
-            </table>
-        </div>
-        <p id="bc-note" class="text-xs text-slate-600 mt-1 hidden">* BindCraft count reduced (filters active)</p>
-    </div>
-
-    <!-- Section 3: Generate-only advanced options -->
-    <details class="bg-slate-900 border border-slate-700 rounded-lg">
-        <summary class="p-4 cursor-pointer text-slate-300 hover:text-white font-medium">
-            Advanced Options (generate)
-        </summary>
-        <div class="px-6 pb-6 grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">ESMFold pLDDT threshold</label>
-                <input type="number" name="esmfold_plddt_threshold" step="1" placeholder="80"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Max site dist (A)</label>
-                <input type="number" name="max_site_dist" step="0.5" placeholder="15.0"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Min site fraction</label>
-                <input type="number" name="min_site_fraction" step="0.1" placeholder="0.0"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Filter site PAE</label>
-                <input type="number" name="filter_site_pae" step="1" placeholder="15.0"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">Top N designs</label>
-                <input type="number" name="top_n" value="50"
-                       class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-1">BindCraft filters</label>
-                <select name="bindcraft_filters" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
-                    <option value="no_filters" selected>no_filters (accept all — default)</option>
-                    <option value="relaxed">relaxed (light quality gate)</option>
-                    <option value="kras_relaxed">kras_relaxed (very relaxed)</option>
-                    <option value="default">default (strict — may stall)</option>
-                    <option value="peptide">peptide (for peptide binders)</option>
-                    <option value="peptide_relaxed">peptide_relaxed (relaxed peptide)</option>
-                </select>
+        <!-- Designs per tool/mode table (molecule) -->
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-slate-400 mb-2">Designs per tool &amp; mode</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-center">
+                    <thead class="text-slate-500 border-b border-slate-700">
+                        <tr>
+                            <th class="text-left py-1 px-2">Tool</th>
+                            <th class="py-1 px-2">test</th>
+                            <th class="py-1 px-2">standard</th>
+                            <th class="py-1 px-2">production</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-slate-300">
+                        <tr><td class="text-left py-1 px-2" style="color:#E53935">PocketFlow</td><td>100</td><td>1,000</td><td>5,000</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#7C3AED">MolCRAFT</td><td>100</td><td>1,000</td><td>5,000</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#0EA5E9">PocketXMol</td><td>100</td><td>1,000</td><td>5,000</td></tr>
+                        <tr><td class="text-left py-1 px-2" style="color:#FF9800">Library + Vina</td><td colspan="3" class="text-slate-500">depends on library size</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
-    </details>
+    </div>
 
     <!-- Launch Button -->
     <div class="flex gap-3">
@@ -238,7 +362,38 @@
 
 {% block scripts %}
 <script>
-    // Drag-drop file upload
+    // ── Job type toggle ──────────────────────────────────────────────────────
+    function switchJobType(type) {
+        document.getElementById('job_type').value = type;
+        const binderBtn = document.getElementById('type-binder');
+        const molBtn = document.getElementById('type-molecule');
+        const binderSection = document.getElementById('binder-section');
+        const molSection = document.getElementById('molecule-section');
+        const lengthField = document.getElementById('length-field');
+        const title = document.getElementById('page-title');
+
+        if (type === 'molecule') {
+            molBtn.classList.replace('bg-slate-700', 'bg-blue-600');
+            molBtn.classList.replace('text-slate-400', 'text-white');
+            binderBtn.classList.replace('bg-blue-600', 'bg-slate-700');
+            binderBtn.classList.replace('text-white', 'text-slate-400');
+            binderSection.classList.add('hidden');
+            molSection.classList.remove('hidden');
+            if (lengthField) lengthField.classList.add('hidden');
+            title.textContent = 'Launch Small Molecule Design';
+        } else {
+            binderBtn.classList.replace('bg-slate-700', 'bg-blue-600');
+            binderBtn.classList.replace('text-slate-400', 'text-white');
+            molBtn.classList.replace('bg-blue-600', 'bg-slate-700');
+            molBtn.classList.replace('text-white', 'text-slate-400');
+            binderSection.classList.remove('hidden');
+            molSection.classList.add('hidden');
+            if (lengthField) lengthField.classList.remove('hidden');
+            title.textContent = 'Launch Binder Design';
+        }
+    }
+
+    // ── Drag-drop file upload ────────────────────────────────────────────────
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
     const dropText = document.getElementById('drop-text');
@@ -258,7 +413,7 @@
         if (fileInput.files.length) dropText.textContent = fileInput.files[0].name;
     });
 
-    // BindCraft count update based on filter selection
+    // ── BindCraft count update ───────────────────────────────────────────────
     function updateBindCraftCounts() {
         const bcFilter = document.querySelector('select[name="bindcraft_filters"]');
         if (!bcFilter) return;
@@ -271,7 +426,7 @@
     document.querySelector('select[name="bindcraft_filters"]')?.addEventListener('change', updateBindCraftCounts);
     updateBindCraftCounts();
 
-    // Project selector toggle
+    // ── Project selector toggle ──────────────────────────────────────────────
     const projectSelect = document.getElementById('project-select');
     const projectNew = document.getElementById('project-new');
     projectSelect.addEventListener('change', () => {
@@ -283,7 +438,12 @@
         }
     });
 
-    // Form submission
+    // Toggle tag inputs with reprediction checkbox
+    document.getElementById('reprediction_cb')?.addEventListener('change', (e) => {
+        document.getElementById('launch-tag-inputs-div').classList.toggle('hidden', !e.target.checked);
+    });
+
+    // ── Form submission ──────────────────────────────────────────────────────
     document.getElementById('launch-form').addEventListener('submit', async (e) => {
         e.preventDefault();
         const btn = document.getElementById('launch-btn');
@@ -292,29 +452,19 @@
 
         const form = e.target;
         const formData = new FormData();
+        const jobType = document.getElementById('job_type').value;
+        formData.append('job_type', jobType);
 
         // Project
         let project = projectSelect.value;
         if (project === '__new__') project = projectNew.value.trim();
-        if (!project) { alert('Please select or create a project'); btn.disabled = false; btn.textContent = 'Launch'; return; }
+        if (!project) { alert('Please select or create a project'); btn.disabled = false; btn.textContent = 'Launch Pipeline'; return; }
         formData.append('project', project);
 
-        // Collect basic fields
+        // Shared fields
         formData.append('job_name', form.job_name.value);
         formData.append('gpu_id', form.gpu_id.value);
         formData.append('site', form.site.value);
-        formData.append('length', form.length.value);
-        formData.append('mode', form.querySelector('input[name="mode"]:checked').value);
-        formData.append('ss_bias', form.querySelector('input[name="ss_bias"]:checked').value);
-        formData.append('score_weights', form.score_weights.value);
-        formData.append('plip_top', form.plip_top.value);
-        formData.append('top_n', form.top_n.value);
-        formData.append('reprediction', form.reprediction.checked);
-
-        // Tools
-        const tools = [];
-        document.querySelectorAll('input[name^="tool_"]:checked').forEach(cb => tools.push(cb.value));
-        formData.append('tools', tools.join(','));
 
         // File or path
         if (fileInput.files.length) {
@@ -322,14 +472,46 @@
         }
         formData.append('target_path', form.target_path.value);
 
-        // BindCraft filters
-        formData.append('bindcraft_filters', form.bindcraft_filters.value);
+        if (jobType === 'molecule') {
+            // Molecule-specific fields
+            const molTools = [];
+            document.querySelectorAll('input[name^="mol_tool_"]:checked').forEach(cb => molTools.push(cb.value));
+            formData.append('tools', molTools.join(','));
+            formData.append('mode', form.querySelector('input[name="mol_mode"]:checked')?.value || 'test');
+            // Collect checked libraries as comma-separated
+            const checkedLibs = [...document.querySelectorAll('.lib-checkbox:checked')].map(cb => cb.value);
+            formData.append('library', checkedLibs.join(','));
+            formData.append('no_vina', document.getElementById('no_vina_cb')?.checked ? '1' : '');
+            formData.append('score_weights', form.querySelector('[name="mol_score_weights"]')?.value || '0.5,0.3,0.2');
+            formData.append('pocket_dist', form.querySelector('[name="pocket_dist"]')?.value || '8.0');
+            formData.append('max_atoms', form.querySelector('[name="max_atoms"]')?.value || '35');
+            formData.append('top_n', form.querySelector('[name="mol_top_n"]')?.value || '50');
+        } else {
+            // Binder-specific fields
+            formData.append('length', form.length.value);
+            formData.append('mode', form.querySelector('input[name="mode"]:checked').value);
+            formData.append('ss_bias', form.querySelector('input[name="ss_bias"]:checked').value);
+            formData.append('score_weights', form.score_weights.value);
+            formData.append('plip_top', form.plip_top.value);
+            formData.append('top_n', form.top_n.value);
+            formData.append('reprediction', form.reprediction.checked);
+            if (form.reprediction.checked && form.n_tag?.value?.trim()) formData.append('n_tag', form.n_tag.value.trim());
+            if (form.reprediction.checked && form.c_tag?.value?.trim()) formData.append('c_tag', form.c_tag.value.trim());
 
-        // Advanced options (generate-only, no rerank filters)
-        ['max_site_dist', 'min_site_fraction', 'filter_site_pae', 'esmfold_plddt_threshold'].forEach(field => {
-            const val = form[field]?.value;
-            if (val) formData.append(field, val);
-        });
+            // Binder tools
+            const tools = [];
+            document.querySelectorAll('input[name^="tool_"]:checked').forEach(cb => tools.push(cb.value));
+            formData.append('tools', tools.join(','));
+
+            // BindCraft filters
+            formData.append('bindcraft_filters', form.bindcraft_filters.value);
+
+            // Advanced options
+            ['max_site_dist', 'min_site_fraction', 'filter_site_pae', 'esmfold_plddt_threshold'].forEach(field => {
+                const val = form[field]?.value;
+                if (val) formData.append(field, val);
+            });
+        }
 
         try {
             const resp = await fetch('/api/jobs', { method: 'POST', body: formData });
@@ -348,34 +530,70 @@
         }
     });
 
-    // Dry run
+    // ── Dry run ──────────────────────────────────────────────────────────────
     document.getElementById('dryrun-btn').addEventListener('click', () => {
         const form = document.getElementById('launch-form');
-        const parts = ['python generate_binders.py'];
-        parts.push('--target ' + (form.target_path.value || '<uploaded.pdb>'));
-        parts.push('--site "' + form.site.value + '"');
-        parts.push('--length ' + form.length.value);
-
-        const tools = [];
-        document.querySelectorAll('input[name^="tool_"]:checked').forEach(cb => tools.push(cb.value));
-        parts.push('--tools ' + tools.join(','));
-        parts.push('--mode ' + form.querySelector('input[name="mode"]:checked').value);
-        parts.push('--device cuda:' + form.gpu_id.value);
-        parts.push('--score_weights ' + form.score_weights.value);
-        parts.push('--ss_bias ' + form.querySelector('input[name="ss_bias"]:checked').value);
-
-        if (form.reprediction.checked) parts.push('--reprediction');
-        if (form.plip_top.value) parts.push('--plip_top ' + form.plip_top.value);
-
-        ['max_site_dist', 'min_site_fraction', 'filter_site_pae', 'esmfold_plddt_threshold'].forEach(f => {
-            const val = form[f]?.value;
-            if (val) parts.push('--' + f + ' ' + val);
-        });
-        const bcf = form.bindcraft_filters.value;
-        if (bcf && bcf !== 'no_filters') parts.push('--bindcraft_filters ' + bcf);
-
+        const jobType = document.getElementById('job_type').value;
         const out = document.getElementById('dryrun-output');
-        out.textContent = 'CUDA_VISIBLE_DEVICES=' + form.gpu_id.value + ' \\\n  ' + parts.join(' \\\n  ');
+
+        if (jobType === 'molecule') {
+            const parts = ['python generate_molecules.py'];
+            parts.push('--target ' + (form.target_path.value || '<uploaded.pdb>'));
+            parts.push('--site "' + form.site.value + '"');
+
+            const molTools = [];
+            document.querySelectorAll('input[name^="mol_tool_"]:checked').forEach(cb => molTools.push(cb.value));
+            if (molTools.length) parts.push('--tools ' + molTools.join(','));
+
+            const libs = [...document.querySelectorAll('.lib-checkbox:checked')].map(cb => cb.value).join(',');
+            if (libs) parts.push('--library ' + libs);
+
+            parts.push('--mode ' + (form.querySelector('input[name="mol_mode"]:checked')?.value || 'test'));
+            parts.push('--device cuda:' + form.gpu_id.value);
+            parts.push('--pocket_dist ' + (form.querySelector('[name="pocket_dist"]')?.value || '8.0'));
+
+            const maxAtoms = form.querySelector('[name="max_atoms"]')?.value;
+            if (maxAtoms && maxAtoms !== '35') parts.push('--max_atoms ' + maxAtoms);
+
+            const molWeights = form.querySelector('[name="mol_score_weights"]')?.value;
+            if (molWeights && molWeights !== '0.5,0.3,0.2') parts.push('--score_weights ' + molWeights);
+
+            if (document.getElementById('no_vina_cb')?.checked) parts.push('--no_vina');
+
+            const topN = form.querySelector('[name="mol_top_n"]')?.value;
+            if (topN && topN !== '50') parts.push('--top_n ' + topN);
+
+            out.textContent = 'CUDA_VISIBLE_DEVICES=' + form.gpu_id.value + ' \\\n  ' + parts.join(' \\\n  ');
+        } else {
+            const parts = ['python generate_binders.py'];
+            parts.push('--target ' + (form.target_path.value || '<uploaded.pdb>'));
+            parts.push('--site "' + form.site.value + '"');
+            parts.push('--length ' + form.length.value);
+
+            const tools = [];
+            document.querySelectorAll('input[name^="tool_"]:checked').forEach(cb => tools.push(cb.value));
+            parts.push('--tools ' + tools.join(','));
+            parts.push('--mode ' + form.querySelector('input[name="mode"]:checked').value);
+            parts.push('--device cuda:' + form.gpu_id.value);
+            parts.push('--score_weights ' + form.score_weights.value);
+            parts.push('--ss_bias ' + form.querySelector('input[name="ss_bias"]:checked').value);
+
+            if (form.reprediction.checked) {
+                parts.push('--reprediction');
+                if (form.n_tag?.value?.trim()) parts.push('--n_tag ' + form.n_tag.value.trim().toUpperCase());
+                if (form.c_tag?.value?.trim()) parts.push('--c_tag ' + form.c_tag.value.trim().toUpperCase());
+            }
+            if (form.plip_top.value) parts.push('--plip_top ' + form.plip_top.value);
+
+            ['max_site_dist', 'min_site_fraction', 'filter_site_pae', 'esmfold_plddt_threshold'].forEach(f => {
+                const val = form[f]?.value;
+                if (val) parts.push('--' + f + ' ' + val);
+            });
+            const bcf = form.bindcraft_filters.value;
+            if (bcf && bcf !== 'no_filters') parts.push('--bindcraft_filters ' + bcf);
+
+            out.textContent = 'CUDA_VISIBLE_DEVICES=' + form.gpu_id.value + ' \\\n  ' + parts.join(' \\\n  ');
+        }
         out.classList.remove('hidden');
     });
 </script>

@@ -1,4 +1,4 @@
-"""BinderFlow configuration loader.
+"""ProteaFlow configuration loader.
 
 Loads paths and settings from config.yaml with environment variable overrides.
 
@@ -45,8 +45,8 @@ def _expand(value: str, context: dict) -> str:
     return result
 
 
-class BinderFlowConfig:
-    """Central configuration for all BinderFlow paths and settings."""
+class ProteaFlowConfig:
+    """Central configuration for all ProteaFlow paths and settings."""
 
     def __init__(self):
         self._raw = {}
@@ -102,6 +102,9 @@ class BinderFlowConfig:
             return val
         if default:
             return os.path.expanduser(default)
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Tool '{key}' not configured (no env var, config, or default)")
         return ""
 
     def conda_env(self, name: str) -> str:
@@ -137,4 +140,4 @@ class BinderFlowConfig:
 
 
 # Singleton — import and use directly
-cfg = BinderFlowConfig()
+cfg = ProteaFlowConfig()

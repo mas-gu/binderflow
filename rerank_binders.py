@@ -70,11 +70,11 @@ WHAT IT DOES
 1. Scans results_dir/{tool}/ for each tool's outputs (backbones, CIFs, CSVs)
    — supports multiple dirs for merging (deduplicates by sequence)
 2. Loads existing validation from each results_dir/validation/
-3. Runs ESMFold → Boltz-2 → geometric filter → Rosetta → SS analysis → ranking
+3. Runs Boltz-2 monomer → Boltz-2 complex → geometric filter → Rosetta → SS analysis → ranking
    (or subset with --rank_only)
 4. Writes new rankings.csv, top_designs/, dashboard.png to out_dir
 
-Existing validation results (ESMFold PDBs, Boltz CIFs) are reused if present.
+Existing validation results (Boltz-2 monomer CIFs, Boltz-2 complex CIFs) are reused if present.
 New validation outputs go to out_dir/validation/.
 """
 
@@ -100,7 +100,7 @@ from generate_binders import (
     # Metrics loaders
     _load_boltzgen_metrics, _load_bindcraft_metrics,
     # Validation + filtering
-    validate_esmfold, validate_boltz, rosetta_score_interfaces, compute_refolding_rmsd,
+    validate_boltz_monomer, validate_boltz, rosetta_score_interfaces, compute_refolding_rmsd,
     compute_solubility,
     geometric_site_filter, populate_binder_composition, populate_interface_composition, populate_binder_ss,
     # Ranking + output
@@ -570,17 +570,20 @@ COLLECTORS = {
 # ── Reuse existing validation results ────────────────────────────────────────
 
 def load_existing_esmfold(designs, val_dir):
-    """Check for existing ESMFold PDBs and populate esmfold_plddt if available.
+    """Check for existing monomer validation results and populate esmfold_plddt.
 
-    Also loads failed ESMFold results from rankings.csv in the parent dir
-    (designs that were tested but had pLDDT below threshold — no PDB saved).
-    This avoids re-running ESMFold on designs known to fail.
+    Checks both legacy ESMFold PDBs (validation/esmfold/) and new Boltz-2
+    monomer CIFs (validation/boltz_monomer/). Also loads results from
+    rankings.csv for designs that were tested but had pLDDT below threshold.
     """
+    import numpy as np
+
     esm_dir = Path(val_dir) / "esmfold"
+    monomer_dir = Path(val_dir) / "boltz_monomer"
     loaded = 0
 
-    # Load failed ESMFold results from rankings.csv (if exists)
-    # These designs were tested but pLDDT was below threshold → no PDB saved
+    # Load failed results from rankings.csv (if exists)
+    # These designs were tested but pLDDT was below threshold
     failed_plddt = {}
     rankings_csv = Path(val_dir).parent / "rankings.csv"
     if rankings_csv.exists():
@@ -601,21 +604,40 @@ def load_existing_esmfold(designs, val_dir):
         except Exception:
             pass  # CSV parsing failed, skip
 
-    if not esm_dir.exists() and not failed_plddt:
+    if not esm_dir.exists() and not monomer_dir.exists() and not failed_plddt:
         return 0
 
     for d in designs:
         if "esmfold_plddt" in d:
             continue  # already loaded from another results_dir
 
-        # Try PDB file first (designs that passed ESMFold)
         did = d["design_id"]
+        orig_did = d.get("_orig_design_id", did)
+
+        # Try Boltz-2 monomer results first (new format)
+        pred_dir = monomer_dir / "boltz_results_batch_inputs" / "predictions" / did
+        if not pred_dir.exists() and orig_did != did:
+            pred_dir = monomer_dir / "boltz_results_batch_inputs" / "predictions" / orig_did
+        if pred_dir.exists():
+            plddt_files = sorted(pred_dir.glob("plddt_*.npz"))
+            if plddt_files:
+                try:
+                    plddt_arr = np.load(plddt_files[0])["plddt"] * 100.0
+                    d["esmfold_plddt"] = float(plddt_arr.mean())
+                    cifs = sorted(pred_dir.glob("*.cif"))
+                    if cifs:
+                        d["esmfold_pdb"] = str(cifs[0])
+                    loaded += 1
+                    continue
+                except Exception:
+                    pass
+
+        # Try legacy ESMFold PDB (old format)
         pdb_path = esm_dir / f"{did}.pdb" if esm_dir.exists() else None
-        if pdb_path and not pdb_path.exists() and "_orig_design_id" in d:
-            pdb_path = esm_dir / f"{d['_orig_design_id']}.pdb"
+        if pdb_path and not pdb_path.exists() and orig_did != did:
+            pdb_path = esm_dir / f"{orig_did}.pdb"
 
         if pdb_path and pdb_path.exists():
-            # Parse pLDDT from B-factors of CA atoms
             bfacs = []
             for line in pdb_path.read_text().splitlines():
                 if line.startswith("ATOM") and line[12:16].strip() == "CA":
@@ -624,16 +646,14 @@ def load_existing_esmfold(designs, val_dir):
                     except (ValueError, IndexError):
                         pass
             if bfacs:
-                import numpy as np
                 plddt = float(np.mean(bfacs))
                 plddt = plddt * 100.0 if plddt <= 1.0 else plddt
                 d["esmfold_plddt"] = plddt
+                d["esmfold_pdb"] = str(pdb_path)
                 loaded += 1
                 continue
 
-        # Fall back to rankings.csv for failed designs (no PDB but has pLDDT)
-        # Use original design_id for lookup (multi-dir merge prefixes IDs)
-        orig_did = d.get("_orig_design_id", did)
+        # Fall back to rankings.csv for failed designs
         if orig_did in failed_plddt:
             d["esmfold_plddt"] = failed_plddt[orig_did]
             loaded += 1
@@ -643,7 +663,7 @@ def load_existing_esmfold(designs, val_dir):
             loaded += 1
             continue
 
-        # Design has no ESMFold result — leave esmfold_plddt unset so the
+        # Design has no monomer result — leave esmfold_plddt unset so the
         # pipeline knows it needs to be run (don't assume 0.0 = failed)
 
     return loaded
@@ -863,19 +883,19 @@ def main():
                         help=f"Comma-separated tools to collect (default: auto-detect). "
                              f"Available: {','.join(ALL_TOOLS)}")
     parser.add_argument("--rank_only", action="store_true",
-                        help="Skip validation (ESMFold, Boltz, Rosetta) — only re-rank "
+                        help="Skip validation (Boltz-2 monomer, Boltz-2 complex, Rosetta) — only re-rank "
                              "using existing validation results")
     parser.add_argument("--skip_esmfold", action="store_true",
-                        help="Skip ESMFold pre-filter (reuse existing results if available)")
+                        help="Skip Boltz-2 monomer pre-filter (reuse existing results if available)")
     parser.add_argument("--skip_boltz", action="store_true",
                         help="Skip Boltz-2 validation (reuse existing results if available)")
     parser.add_argument("--skip_rosetta", action="store_true",
                         help="Skip Rosetta scoring (reuse existing results if available)")
     parser.add_argument("--rerun_rosetta", action="store_true",
                         help="Force re-run Rosetta scoring on all designs (updates SAP and "
-                             "other metrics). Skips ESMFold and Boltz-2.")
+                             "other metrics). Skips Boltz-2 monomer and Boltz-2 complex.")
     parser.add_argument("--esmfold_plddt_threshold", type=float, default=80.0,
-                        help="ESMFold pre-filter threshold (default: 80)")
+                        help="Boltz-2 monomer pre-filter pLDDT threshold (default: 80)")
     parser.add_argument("--max_validate", type=int, default=20,
                         help="Max designs sent to Boltz validation per tool (default: 20)")
     parser.add_argument("--score_weights", default="0.4,0.5,0.1",
@@ -916,8 +936,8 @@ def main():
                              "and binder approach direction. 0.0=any direction from solvent side, "
                              "0.5=within 60 degrees of normal. Default: disabled.")
     parser.add_argument("--max_refolding_rmsd", type=float, default=None,
-                        help="Maximum refolding RMSD (Angstrom) between ESMFold binder-alone "
-                             "and Boltz-2 binder-in-complex. Filters target-dependent binders. "
+                        help="Maximum refolding RMSD (Angstrom) between Boltz-2 monomer binder-alone "
+                             "and Boltz-2 complex binder-in-complex. Filters target-dependent binders. "
                              "Typical: 3.0-4.0 Å.")
     parser.add_argument("--max_interface_ke", type=float, default=None,
                         help="Maximum K+E fraction at the binder-target interface (0-1). "
@@ -935,6 +955,12 @@ def main():
     parser.add_argument("--reprediction", action="store_true",
                         help="Use Boltz-2 re-prediction scoring for all tools "
                              "(default: use native tool scores for BindCraft/BoltzGen/PXDesign)")
+    parser.add_argument("--n_tag", type=str, default="",
+                        help="Amino acid sequence to prepend to binder N-terminus for Boltz-2 reprediction "
+                             "(e.g. MHHHHHH for His-tag). Only used during reprediction.")
+    parser.add_argument("--c_tag", type=str, default="",
+                        help="Amino acid sequence to append to binder C-terminus for Boltz-2 reprediction "
+                             "(e.g. HHHHHH for C-terminal His-tag). Only used during reprediction.")
     parser.add_argument("--ss_bias", choices=["beta", "helix", "balanced"],
                         default="balanced",
                         help="SS composition bias for scoring and filtering. "
@@ -992,6 +1018,15 @@ def main():
         if not tools:
             sys.exit(f"ERROR: no tool output directories found in {results_dirs}")
 
+    # Validate and uppercase terminal tags
+    VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
+    for tag_name in ("n_tag", "c_tag"):
+        tag_val = getattr(args, tag_name).strip().upper()
+        if tag_val and not set(tag_val).issubset(VALID_AA):
+            bad = set(tag_val) - VALID_AA
+            sys.exit(f"ERROR: --{tag_name} contains invalid amino acid characters: {bad}")
+        setattr(args, tag_name, tag_val)
+
     if args.rank_only:
         args.skip_esmfold = True
         args.skip_boltz = True
@@ -1017,13 +1052,16 @@ def main():
     log(f"Tools:            {tools}")
     log(f"Score weights:    pLDDT={score_weights[0]}, iPTM={score_weights[1]}, dG={score_weights[2]}")
     log(f"Reprediction:     {args.reprediction}")
+    if args.n_tag or args.c_tag:
+        log(f"N-terminal tag:   {args.n_tag or '(none)'}")
+        log(f"C-terminal tag:   {args.c_tag or '(none)'}")
     log(f"SS bias:          {args.ss_bias}")
     log(f"Filter PAE:       {args.filter_interface_pae}")
     log(f"Max site dist:    {args.max_site_dist} Å")
     mode = "rank-only" if args.rank_only else "re-validate"
     if not args.rank_only:
         skips = []
-        if args.skip_esmfold: skips.append("ESMFold")
+        if args.skip_esmfold: skips.append("Boltz-2 monomer")
         if args.skip_boltz:   skips.append("Boltz")
         if args.skip_rosetta: skips.append("Rosetta")
         if skips:
@@ -1137,20 +1175,20 @@ def main():
 
     if n_esm or n_boltz or n_rosetta:
         log(f"\nExisting validation results loaded:")
-        if n_esm:     log(f"  ESMFold: {n_esm}/{len(all_designs)} designs")
+        if n_esm:     log(f"  Boltz-2 monomer: {n_esm}/{len(all_designs)} designs")
         if n_boltz:   log(f"  Boltz-2: {n_boltz}/{len(all_designs)} designs")
         if n_rosetta: log(f"  Rosetta: {n_rosetta}/{len(all_designs)} designs")
     if args.reprediction:
         log(f"  (reprediction mode: only using own out_dir cache, ignoring results_dir scores)")
 
     # ── Validation ─────────────────────────────────────────────────────────
-    # Stage 1: ESMFold
+    # Stage 1: Boltz-2 monomer
     if not args.skip_esmfold:
         if args.reprediction:
-            # --reprediction ON: ESMFold all designs missing plddt
+            # --reprediction ON: Boltz-2 monomer all designs missing plddt
             need_esm = [d for d in all_designs if "esmfold_plddt" not in d]
         else:
-            # --reprediction OFF: only ESMFold backbone-only tools
+            # --reprediction OFF: only Boltz-2 monomer for backbone-only tools
             need_esm = [d for d in all_designs
                         if "esmfold_plddt" not in d
                         and _get_tool_from_design_id(d["design_id"]) in BACKBONE_ONLY_TOOLS]
@@ -1158,16 +1196,17 @@ def main():
                          if "esmfold_plddt" not in d
                          and _get_tool_from_design_id(d["design_id"]) in IPTM_NATIVE_TOOLS)
             if n_skip:
-                log(f"  ESMFold: skipping {n_skip} native-iPTM designs")
+                log(f"  Boltz-2 monomer: skipping {n_skip} native-iPTM designs")
         if need_esm:
             log(f"\n{'─' * 50}")
-            log(f"STEP: ESMFold pre-filter ({len(need_esm)} new designs)")
+            log(f"STEP: Boltz-2 monomer pre-filter ({len(need_esm)} new designs)")
             log(f"{'─' * 50}")
-            validate_esmfold(need_esm, val_dir, args.esmfold_plddt_threshold, args.dry_run)
+            validate_boltz_monomer(need_esm, val_dir, args.esmfold_plddt_threshold, args.dry_run,
+                                  n_tag=args.n_tag, c_tag=args.c_tag)
         else:
-            log(f"\nESMFold: all applicable designs already validated")
+            log(f"\nBoltz-2 monomer: all applicable designs already validated")
 
-    # Apply ESMFold filter — only gate backbone-only tools; native-iPTM tools pass through
+    # Apply Boltz-2 monomer filter — only gate backbone-only tools; native-iPTM tools pass through
     if args.reprediction:
         passing = [d for d in all_designs
                    if d.get("esmfold_plddt", 0) >= args.esmfold_plddt_threshold]
@@ -1176,10 +1215,10 @@ def main():
                    if _get_tool_from_design_id(d["design_id"]) in IPTM_NATIVE_TOOLS
                    or d.get("esmfold_plddt", 0) >= args.esmfold_plddt_threshold]
     if not passing:
-        log("WARNING: no designs passed ESMFold threshold. Using all designs.")
+        log("WARNING: no designs passed Boltz-2 monomer threshold. Using all designs.")
         passing = all_designs
     else:
-        log(f"ESMFold filter: {len(passing)}/{len(all_designs)} passed")
+        log(f"Boltz-2 monomer filter: {len(passing)}/{len(all_designs)} passed")
 
     # Stage 2: Boltz-2
     if not args.skip_boltz:
@@ -1206,7 +1245,8 @@ def main():
                 target_len=target_len,
                 dry_run=args.dry_run,
                 site_resnums=site_resnums,
-                target_residues=tchain.get("residues"))
+                target_residues=tchain.get("residues"),
+                n_tag=args.n_tag, c_tag=args.c_tag)
         else:
             log(f"\nBoltz-2: all applicable designs already validated")
 
@@ -1257,18 +1297,32 @@ def main():
     n_restored = 0
     search_dirs = list(results_dirs) + ([out_dir] if out_dir not in results_dirs else [])
     for rd in search_dirs:
+        # Check Boltz-2 monomer CIFs first (new format), then legacy ESMFold PDBs
+        monomer_pred_dir = rd / "validation" / "boltz_monomer" / "boltz_results_batch_inputs" / "predictions"
         esmfold_dir = rd / "validation" / "esmfold"
-        if esmfold_dir.exists():
-            for d in all_designs:
-                if "esmfold_pdb" not in d:
-                    esm_pdb = esmfold_dir / f"{d['design_id']}.pdb"
-                    if not esm_pdb.exists() and "_orig_design_id" in d:
-                        esm_pdb = esmfold_dir / f"{d['_orig_design_id']}.pdb"
-                    if esm_pdb.exists():
-                        d["esmfold_pdb"] = str(esm_pdb)
-                        n_restored += 1
+        for d in all_designs:
+            if "esmfold_pdb" in d:
+                continue
+            did = d["design_id"]
+            orig_did = d.get("_orig_design_id", did)
+            # Try Boltz monomer CIF
+            for try_id in (did, orig_did):
+                cifs = sorted((monomer_pred_dir / try_id).glob("*.cif")) if (monomer_pred_dir / try_id).exists() else []
+                if cifs:
+                    d["esmfold_pdb"] = str(cifs[0])
+                    n_restored += 1
+                    break
+            else:
+                # Try legacy ESMFold PDB
+                if esmfold_dir.exists():
+                    for try_id in (did, orig_did):
+                        esm_pdb = esmfold_dir / f"{try_id}.pdb"
+                        if esm_pdb.exists():
+                            d["esmfold_pdb"] = str(esm_pdb)
+                            n_restored += 1
+                            break
     if n_restored:
-        log(f"  Restored {n_restored} ESMFold PDB paths for SS computation")
+        log(f"  Restored {n_restored} monomer structure paths for SS/RMSD computation")
 
     # SS fraction computation (needed for ss_bias scoring/filtering)
     log(f"\n{'─' * 50}")
@@ -1281,11 +1335,12 @@ def main():
     else:
         log("  (SS skipped in dry-run mode)")
 
-    # Refolding RMSD (ESMFold alone vs Boltz-2 complex)
+    # Refolding RMSD (Boltz-2 monomer vs Boltz-2 complex)
     log(f"\n{'─' * 50}")
     log("STEP: Refolding RMSD")
     log(f"{'─' * 50}")
-    compute_refolding_rmsd(all_designs, dry_run=args.dry_run)
+    compute_refolding_rmsd(all_designs, dry_run=args.dry_run,
+                           n_tag=args.n_tag, c_tag=args.c_tag)
 
     # Solubility prediction (NetSolP)
     log(f"\n{'─' * 50}")
@@ -1518,7 +1573,7 @@ def main():
             log(f"  rank {d['rank']:3d}  {d['design_id']:<22s}  "
                 f"score={d['combined_score']:.3f}  "
                 f"iPTM={d.get('boltz_iptm', 0):.3f}  "
-                f"ESMFold={d.get('esmfold_plddt', 0):.1f}  "
+                f"monomer_pLDDT={d.get('esmfold_plddt', 0):.1f}  "
                 f"minPAE={pae_str}")
 
     # Per-tool K+E composition summary (total + interface)

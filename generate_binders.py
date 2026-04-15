@@ -5,7 +5,7 @@
 generate_binders.py — Multi-tool binder design pipeline.
 
 Given a target protein and a binding site, runs up to six complementary design
-tools, validates all outputs with ESMFold (fast pre-filter) and Boltz-2 (uniform
+tools, validates all outputs with Boltz-2 monomer (fast pre-filter) and Boltz-2 complex (uniform
 cross-tool scoring with site pocket constraint), then ranks and outputs the best
 binder candidates.
 
@@ -57,7 +57,7 @@ pxdesign
     AF2-IG filter → Protenix filter → Foldseek clustering → Ranked output.
     Achieves 20-73% experimental nanomolar hit rates (2-6x RFdiffusion).
     PXDesign does its own internal multi-model filtering; designs reaching
-    summary.csv are already pre-validated. Our ESMFold + Boltz-2 stages
+    summary.csv are already pre-validated. Our Boltz-2 monomer + Boltz-2 complex stages
     add independent cross-model validation.
     Merges 7 native quality columns (px_*).
     Conda env: pxdesign.
@@ -104,7 +104,7 @@ KEY ARGUMENTS
 
     --max_validate N
         Number of designs per tool sent to Boltz validation (default: 20).
-        Selected by highest ESMFold pLDDT.
+        Selected by highest monomer pLDDT.
 
     --top_n N
         Number of top designs copied to top_designs/ (default: 50).
@@ -112,11 +112,11 @@ KEY ARGUMENTS
 ═══════════════════════════════════════════════════════════════════════════════
 VALIDATION PIPELINE
 ═══════════════════════════════════════════════════════════════════════════════
-Stage 1 — ESMFold pre-filter
-    Each binder sequence folded independently. Threshold: pLDDT ≥ 70.
-    Filters unstructured/disordered sequences before expensive Boltz runs.
+Stage 1 — Boltz-2 monomer pre-filter
+    Each binder sequence folded independently by Boltz-2. Threshold: pLDDT ≥ 70.
+    Filters unstructured/disordered sequences before expensive complex runs.
 
-Stage 2 — Boltz-2 uniform scoring (top N per tool by ESMFold pLDDT)
+Stage 2 — Boltz-2 complex scoring (top N per tool by monomer pLDDT)
     Binder + target complex predicted with:
       • recycling_steps=2, sampling_steps=200, num_subsampled_msa=128
       • Pocket constraint steering to --site residues (prevents off-target docking)
@@ -143,7 +143,7 @@ RANKINGS & OUTPUT
 
     rankings.csv columns (50+):
       Core:    rank, design_id, tool, binder_length, binder_sequence
-      ESMFold: esmfold_plddt
+      Monomer: esmfold_plddt (Boltz-2 monomer pLDDT)
       Boltz:   boltz_iptm, boltz_confidence, boltz_protein_iptm, boltz_ptm,
                boltz_complex_plddt, boltz_iplddt, boltz_binder_plddt,
                boltz_complex_pde, boltz_complex_ipde,
@@ -177,7 +177,7 @@ RANKINGS & OUTPUT
     ├── pxdesign/      PXDesign outputs + summary.csv
     ├── proteina/      backbones/ (PDB) + sequences/ (FASTA + per-residue stats)
     ├── bindcraft/     bindcraft_output/Accepted/ + final_design_stats.csv
-    ├── validation/    esmfold/ + boltz/ per-design structures & scores
+    ├── validation/    boltz_monomer/ + boltz/ per-design structures & scores
     ├── top_designs/   top N binder+KRAS complex CIFs + binder FASTA
     ├── rankings.csv   all designs, all scores, sortable
     └── dashboard.png  6-panel summary plot
@@ -2636,7 +2636,7 @@ def compute_binder_ss(design):
 
     Structure file priority:
     1. Boltz-2 complex CIF
-    2. ESMFold PDB
+    2. Boltz-2 monomer CIF (or legacy ESMFold PDB)
     3. Native binder/complex PDB (BindCraft, PXDesign, Proteina Complexa)
     4. Backbone PDB (RFdiffusion, Proteina)
 
@@ -2910,7 +2910,133 @@ def populate_binder_ss(designs):
 
 # ── Validation ─────────────────────────────────────────────────────────────────
 
-def validate_esmfold(designs, val_dir, plddt_threshold=70.0, dry_run=False):
+def validate_boltz_monomer(designs, val_dir, plddt_threshold=70.0, dry_run=False,
+                           n_tag="", c_tag=""):
+    """Stage 1: Boltz-2 monomer pre-filter (replaces ESMFold).
+
+    Folds each binder sequence independently using Boltz-2 in batch mode
+    and filters by mean pLDDT. Uses the same algorithm as the complex
+    prediction for apples-to-apples refolding RMSD comparison.
+
+    Adds to each design dict:
+        esmfold_plddt — mean binder pLDDT (0-100), key kept for backward compat
+        esmfold_pdb   — path to monomer CIF (key kept for refolding RMSD compat)
+
+    Returns list of designs passing the threshold.
+    """
+    import numpy as np
+
+    val_dir = Path(val_dir) / "boltz_monomer"
+    val_dir.mkdir(parents=True, exist_ok=True)
+    batch_yaml_dir = val_dir / "batch_inputs"
+    batch_yaml_dir.mkdir(parents=True, exist_ok=True)
+
+    n_total = len(designs)
+    log(f"Boltz-2 monomer validation: {n_total} designs, pLDDT threshold={plddt_threshold}")
+    if n_tag or c_tag:
+        log(f"  Terminal tags: N={n_tag or '(none)'}, C={c_tag or '(none)'}")
+
+    if dry_run:
+        for d in designs:
+            d["esmfold_plddt"] = 80.0
+        return designs
+
+    # Check which designs already have results
+    needs_prediction = []
+    already_done = []
+    for d in designs:
+        design_id = d["design_id"]
+        result_dir = val_dir / "boltz_results_batch_inputs" / "predictions" / design_id
+        if result_dir.exists() and list(result_dir.glob("plddt_*.npz")):
+            already_done.append(d)
+        else:
+            needs_prediction.append(d)
+
+    if already_done:
+        log(f"  Boltz monomer: {len(already_done)} already predicted, "
+            f"{len(needs_prediction)} new")
+
+    # Write YAML files for designs that need prediction (single-chain, no target)
+    for d in needs_prediction:
+        seq = (n_tag + d["binder_sequence"] + c_tag) if (n_tag or c_tag) else d["binder_sequence"]
+        design_id = d["design_id"]
+        yaml_path = batch_yaml_dir / f"{design_id}.yaml"
+        yaml_content = (
+            "version: 1\n"
+            "sequences:\n"
+            "  - protein:\n"
+            "      id: A\n"
+            f"      sequence: {seq}\n"
+            "      msa: empty\n"
+        )
+        yaml_path.write_text(yaml_content)
+
+    # Run Boltz-2 batch prediction
+    if needs_prediction:
+        log(f"  Boltz monomer: predicting {len(needs_prediction)} designs "
+            f"(batch mode, single model load)...")
+        log(f"  [PROGRESS:esmfold] 0/{n_total} (predicting...)")
+        cmd = [
+            "conda", "run", "--no-capture-output", *cfg.conda_run_args("boltz"),
+            "boltz", "predict", str(batch_yaml_dir),
+            "--out_dir",            str(val_dir),
+            "--recycling_steps",    "2",
+            "--diffusion_samples",  "1",
+            "--sampling_steps",     "200",
+            "--preprocessing-threads", "48",
+            "--no_kernels",
+        ]
+        try:
+            run_cmd(cmd, timeout=None,
+                    extra_env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
+            log(f"  Boltz monomer: batch prediction complete")
+        except Exception as e:
+            log(f"  Boltz monomer batch failed: {e}")
+
+    # Parse results — extract pLDDT for each design
+    passing = []
+    n_parsed = 0
+    for i, d in enumerate(designs):
+        design_id = d["design_id"]
+        pred_dir = val_dir / "boltz_results_batch_inputs" / "predictions" / design_id
+
+        if not pred_dir.exists():
+            d["esmfold_plddt"] = 0.0
+            log(f"  {design_id}: no Boltz monomer output — filtered")
+            continue
+
+        # Extract mean pLDDT from per-token npz
+        plddt = 0.0
+        plddt_files = sorted(pred_dir.glob("plddt_*.npz"))
+        if plddt_files:
+            try:
+                plddt_arr = np.load(plddt_files[0])["plddt"] * 100.0
+                plddt = float(plddt_arr.mean())
+            except Exception as e:
+                log(f"  Warning: could not parse plddt npz for {design_id}: {e}")
+
+        # Save CIF path for refolding RMSD comparison
+        cifs = sorted(pred_dir.glob("*.cif"))
+        if cifs:
+            d["esmfold_pdb"] = str(cifs[0])
+
+        d["esmfold_plddt"] = plddt
+        n_parsed += 1
+
+        if plddt >= plddt_threshold:
+            passing.append(d)
+        else:
+            log(f"  {design_id}: Boltz monomer pLDDT={plddt:.1f} < {plddt_threshold} — filtered")
+
+        if (i + 1) % 25 == 0 or (i + 1) == n_total:
+            log(f"  [PROGRESS:esmfold] {i + 1}/{n_total} ({len(passing)} passed)")
+
+    log(f"Boltz monomer: {len(passing)}/{n_total} passed (pLDDT ≥ {plddt_threshold})")
+    return passing
+
+
+def validate_esmfold(designs, val_dir, plddt_threshold=70.0, dry_run=False,
+                     n_tag="", c_tag=""):
     """
     Stage 1: ESMFold pre-filter.
     Folds each binder sequence independently and filters by mean pLDDT.
@@ -2922,13 +3048,15 @@ def validate_esmfold(designs, val_dir, plddt_threshold=70.0, dry_run=False):
 
     n_total = len(designs)
     log(f"ESMFold validation: {n_total} designs, pLDDT threshold={plddt_threshold}")
+    if n_tag or c_tag:
+        log(f"  Terminal tags: N={n_tag or '(none)'}, C={c_tag or '(none)'}")
     passing = []
 
     for i, d in enumerate(designs):
         if i > 0 and i % 20 == 0:
             log(f"  [PROGRESS:esmfold] {i}/{n_total} ({len(passing)} passed)")
 
-        seq       = d["binder_sequence"]
+        seq       = (n_tag + d["binder_sequence"] + c_tag) if (n_tag or c_tag) else d["binder_sequence"]
         design_id = d["design_id"]
         pdb_path  = val_dir / f"{design_id}.pdb"
 
@@ -2984,10 +3112,10 @@ def validate_esmfold(designs, val_dir, plddt_threshold=70.0, dry_run=False):
 def validate_boltz(designs, target_chain_seq, val_dir,
                    max_per_tool=20, target_len=0, dry_run=False,
                    site_resnums=None, target_residues=None,
-                   boltz_devices=1):
+                   boltz_devices=1, n_tag="", c_tag=""):
     """
     Stage 2: Boltz-2 uniform scoring of binder+target complex.
-    BATCH MODE: all ESMFold-passing designs are predicted in a single Boltz-2
+    BATCH MODE: all monomer-passing designs are predicted in a single Boltz-2
     invocation (model loaded once). max_per_tool is kept for API compatibility
     but ignored — all designs are validated.
 
@@ -3043,7 +3171,7 @@ def validate_boltz(designs, target_chain_seq, val_dir,
     to_validate = [d for d in designs
                    if d.get("esmfold_plddt", 0) == d.get("esmfold_plddt", 0)]  # not NaN
 
-    log(f"Boltz validation: {len(to_validate)} designs (all ESMFold-passing)")
+    log(f"Boltz validation: {len(to_validate)} designs (all monomer-passing)")
 
     # Auto memory-saving for large targets
     large      = target_len > 500
@@ -3148,9 +3276,13 @@ def validate_boltz(designs, target_chain_seq, val_dir,
         else:
             log(f"  Boltz batch: using API MSA for all designs (slow mode)")
 
+        # Log terminal tags if provided
+        if n_tag or c_tag:
+            log(f"  Terminal tags: N={n_tag or '(none)'}, C={c_tag or '(none)'}")
+
         # Write YAML files for designs that need prediction
         for d, _ in needs_prediction:
-            seq = d["binder_sequence"]
+            seq = (n_tag + d["binder_sequence"] + c_tag) if (n_tag or c_tag) else d["binder_sequence"]
             design_id = d["design_id"]
             yaml_path = batch_yaml_dir / f"{design_id}.yaml"
 
@@ -3750,11 +3882,14 @@ def geometric_site_filter(designs, site_resnums, target_residues,
 
 # ── Refolding RMSD ────────────────────────────────────────────────────────────
 
-def compute_refolding_rmsd(designs, dry_run=False):
-    """Compute CA RMSD between ESMFold (binder alone) and Boltz-2 (binder in complex).
+def compute_refolding_rmsd(designs, dry_run=False, n_tag="", c_tag=""):
+    """Compute CA RMSD between Boltz-2 monomer (binder alone) and Boltz-2 complex (binder in complex).
 
     High RMSD (>3-4 Å) indicates the binder only folds correctly when bound
     to the target — likely disordered on its own.
+
+    When terminal tags are present, the tag residues are excluded from RMSD
+    calculation (tags are often disordered and would inflate RMSD).
 
     Adds to each design dict:
         refolding_rmsd — CA RMSD in Angstrom (nan if structures unavailable)
@@ -3819,8 +3954,11 @@ def compute_refolding_rmsd(designs, dry_run=False):
             continue
 
         try:
-            # ESMFold PDB: single chain, binder only
-            esm_chains = _parse_ca_coords_pdb(esm_pdb)
+            # Monomer structure: single chain, binder only (PDB or CIF)
+            if esm_pdb.endswith(".cif"):
+                esm_chains = _parse_ca_coords_cif(esm_pdb)
+            else:
+                esm_chains = _parse_ca_coords_pdb(esm_pdb)
             esm_cas = list(esm_chains.values())[0] if esm_chains else []
 
             # Boltz CIF: multi-chain complex, binder is the shorter chain
@@ -3837,8 +3975,17 @@ def compute_refolding_rmsd(designs, dry_run=False):
                 n_skipped += 1
                 continue
 
-            esm_xyz = [[x, y, z] for _, x, y, z in esm_cas[:n]]
-            boltz_xyz = [[x, y, z] for _, x, y, z in boltz_cas[:n]]
+            # Exclude terminal tag residues from RMSD (tags are disordered)
+            n_skip_start = len(n_tag)
+            n_skip_end = len(c_tag)
+            esm_core = esm_cas[n_skip_start:n - n_skip_end if n_skip_end else n]
+            boltz_core = boltz_cas[n_skip_start:n - n_skip_end if n_skip_end else n]
+            if len(esm_core) < 10:
+                n_skipped += 1
+                continue
+
+            esm_xyz = [[x, y, z] for _, x, y, z in esm_core]
+            boltz_xyz = [[x, y, z] for _, x, y, z in boltz_core]
 
             d["refolding_rmsd"] = round(_kabsch_rmsd(esm_xyz, boltz_xyz), 2)
             n_computed += 1
@@ -4102,7 +4249,7 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
     # Each PyRosetta process uses ~1-2 GB RAM. Use 50% of CPUs, capped by
     # available RAM (2 GB per worker headroom).
     total_cpus = os.cpu_count() or 4
-    cpu_cap = max(4, total_cpus // 2)
+    cpu_cap = min(12, max(4, total_cpus // 2))
     try:
         with open("/proc/meminfo") as mf:
             for line in mf:
@@ -4162,12 +4309,14 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
         "",
         "n_done = 0",
         "n_total = len(pending)",
+        "error_msgs = {}",
         "t0 = time.time()",
         "with ProcessPoolExecutor(max_workers=n_workers) as pool:",
         "    futures = {pool.submit(score_one, job): job[0] for job in pending}",
         "    for future in as_completed(futures):",
         "        design_id, data, msg = future.result()",
         "        results[design_id] = data",
+        "        if not data: error_msgs[design_id] = msg",
         "        n_done += 1",
         "        elapsed = time.time() - t0",
         "        rate = n_done / elapsed * 60 if elapsed > 0 else 0",
@@ -4184,6 +4333,15 @@ def rosetta_score_interfaces(designs, val_dir, dry_run=False):
         "# Final save",
         "with open(scores_out, 'w') as f:",
         "    json.dump(results, f)",
+        "",
+        "# Save error log for failed designs (helps diagnose env issues)",
+        "errors = {k: v for k, v in error_msgs.items() if v}",
+        "if errors:",
+        "    err_path = os.path.join(os.path.dirname(scores_out), 'errors.log')",
+        "    with open(err_path, 'w') as f:",
+        "        for did, msg in list(errors.items())[:20]:",
+        "            f.write(f'{did}: {msg}\\n')",
+        "    print(f'Rosetta: {len(errors)} failures logged to errors.log')",
         "",
         "scored = sum(1 for v in results.values() if v is not None)",
         "elapsed = time.time() - t0",
@@ -5468,11 +5626,11 @@ def plot_dashboard(all_designs, out_path, title="Binder Design Summary"):
         ax2.hist(plddts, bins=15, alpha=0.6, color=colors.get(t, "grey"),
                  label=t, edgecolor="white")
     ax2.axvline(80, color="red", lw=1, ls="--", label="threshold=80")
-    ax2.set_xlabel("ESMFold binder pLDDT"); ax2.set_ylabel("Count")
-    ax2.set_title("ESMFold pre-filter distribution")
+    ax2.set_xlabel("Monomer binder pLDDT"); ax2.set_ylabel("Count")
+    ax2.set_title("Monomer pre-filter distribution")
     ax2.legend(fontsize=8)
 
-    # ── Panel 3: ESMFold pLDDT vs Boltz iPTM scatter ───────────────────────
+    # ── Panel 3: Monomer pLDDT vs Boltz iPTM scatter ───────────────────────
     ax3 = fig.add_subplot(gs[1, 0])
     for t in tool_list:
         pts = [(d.get("esmfold_plddt"), d.get("boltz_iptm")) for d in tool_groups[t]]
@@ -5480,8 +5638,8 @@ def plot_dashboard(all_designs, out_path, title="Binder Design Summary"):
         if pts:
             x, y = zip(*pts)
             ax3.scatter(x, y, c=colors.get(t, "grey"), alpha=0.7, s=30, label=t)
-    ax3.set_xlabel("ESMFold binder pLDDT"); ax3.set_ylabel("Boltz-2 iPTM")
-    ax3.set_title("ESMFold pLDDT vs Boltz iPTM")
+    ax3.set_xlabel("Monomer binder pLDDT"); ax3.set_ylabel("Boltz-2 iPTM")
+    ax3.set_title("Monomer pLDDT vs Boltz iPTM")
     ax3.legend(fontsize=8)
 
     # ── Panel 4: top 20 horizontal bar chart ───────────────────────────────
@@ -5601,7 +5759,7 @@ def main():
     parser.add_argument("--out_dir",   required=True,
                         help="Output directory")
     parser.add_argument("--esmfold_plddt_threshold", type=float, default=80.0,
-                        help="ESMFold pre-filter threshold (default: 80)")
+                        help="Boltz-2 monomer pre-filter pLDDT threshold (default: 80)")
     parser.add_argument("--max_validate", type=int, default=20,
                         help="Max designs sent to Boltz validation per tool (default: 20)")
     parser.add_argument("--score_weights", default="0.4,0.5,0.1",
@@ -5678,11 +5836,26 @@ def main():
                              "Default behavior: only backbone-only tools (RFdiffusion, Proteina) "
                              "go through Boltz-2 re-prediction; native-iPTM tools keep their "
                              "own scores for ranking.")
+    parser.add_argument("--n_tag", type=str, default="",
+                        help="Amino acid sequence to prepend to binder N-terminus for Boltz-2 reprediction "
+                             "(e.g. MHHHHHH for His-tag). Only used during reprediction.")
+    parser.add_argument("--c_tag", type=str, default="",
+                        help="Amino acid sequence to append to binder C-terminus for Boltz-2 reprediction "
+                             "(e.g. HHHHHH for C-terminal His-tag). Only used during reprediction.")
     parser.add_argument("--ss_bias", choices=["beta", "helix", "balanced"],
                         default="balanced",
                         help="Secondary structure bias: beta (more sheets), "
                              "helix (more helices), balanced (default, no bias)")
     args = parser.parse_args()
+
+    # ── Validate and uppercase terminal tags ─────────────────────────────
+    VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
+    for tag_name in ("n_tag", "c_tag"):
+        tag_val = getattr(args, tag_name).strip().upper()
+        if tag_val and not set(tag_val).issubset(VALID_AA):
+            bad = set(tag_val) - VALID_AA
+            sys.exit(f"ERROR: --{tag_name} contains invalid amino acid characters: {bad}")
+        setattr(args, tag_name, tag_val)
 
     # ── Resolve BindCraft filter preset to full path ─────────────────────
     BINDCRAFT_FILTER_PRESETS = {
@@ -5774,6 +5947,9 @@ def main():
     log(f"N designs:        { {t: n_designs.get(t,'?') for t in tools} }")
     log(f"Score weights:    pLDDT={score_weights[0]}, iPTM={score_weights[1]}, dG={score_weights[2]}")
     log(f"Reprediction:     {args.reprediction}")
+    if args.n_tag or args.c_tag:
+        log(f"N-terminal tag:   {args.n_tag or '(none)'}")
+        log(f"C-terminal tag:   {args.c_tag or '(none)'}")
     log(f"SS bias:          {args.ss_bias}")
     log(f"Filter PAE:       {args.filter_interface_pae}")
     log(f"Max site dist:    {args.max_site_dist} Å")
@@ -5798,6 +5974,10 @@ def main():
     cmd_parts.append(f"--ss_bias {args.ss_bias}")
     if args.reprediction:
         cmd_parts.append("--reprediction")
+    if args.n_tag:
+        cmd_parts.append(f"--n_tag {args.n_tag}")
+    if args.c_tag:
+        cmd_parts.append(f"--c_tag {args.c_tag}")
     if args.plip_top:
         cmd_parts.append(f"--plip_top {args.plip_top}")
     if args.top_n != 50:
@@ -5915,31 +6095,33 @@ def main():
     val_dir = out_dir / "validation"
 
     log(f"\n{'─' * 50}")
-    log("STEP: ESMFold pre-filter (Stage 1)")
+    log("STEP: Boltz-2 monomer pre-filter (Stage 1)")
     log(f"{'─' * 50}")
     if args.reprediction:
-        # --reprediction ON: ESMFold all designs (original behavior)
-        passing = validate_esmfold(
-            all_designs, val_dir, args.esmfold_plddt_threshold, args.dry_run)
+        # --reprediction ON: Boltz-2 monomer all designs
+        passing = validate_boltz_monomer(
+            all_designs, val_dir, args.esmfold_plddt_threshold, args.dry_run,
+            n_tag=args.n_tag, c_tag=args.c_tag)
     else:
-        # --reprediction OFF: only ESMFold backbone-only tools (RFdiffusion, Proteina).
+        # --reprediction OFF: only Boltz-2 monomer for backbone-only tools (RFdiffusion, Proteina).
         # iPTM-native tools (BindCraft, BoltzGen, PXDesign, Proteina Complexa)
-        # already have internal validation — ESMFold is redundant for them.
+        # already have internal validation — monomer filter is redundant for them.
         backbone_all = [d for d in all_designs
                         if _get_tool_from_design_id(d["design_id"]) in BACKBONE_ONLY_TOOLS]
         native_all = [d for d in all_designs
                       if _get_tool_from_design_id(d["design_id"]) in IPTM_NATIVE_TOOLS]
-        log(f"  ESMFold: {len(backbone_all)} backbone-only designs "
+        log(f"  Boltz monomer: {len(backbone_all)} backbone-only designs "
             f"(skipping {len(native_all)} native-iPTM designs)")
-        passing_backbone = validate_esmfold(
-            backbone_all, val_dir, args.esmfold_plddt_threshold, args.dry_run)
+        passing_backbone = validate_boltz_monomer(
+            backbone_all, val_dir, args.esmfold_plddt_threshold, args.dry_run,
+            n_tag=args.n_tag, c_tag=args.c_tag)
         if not passing_backbone and backbone_all and not args.dry_run:
             passing_backbone = backbone_all
-        # Native tools pass through directly — no ESMFold gate
+        # Native tools pass through directly — no monomer gate
         passing = (passing_backbone or []) + native_all
 
     if not passing and not args.dry_run:
-        log("WARNING: no designs passed ESMFold pre-filter. "
+        log("WARNING: no designs passed Boltz-2 monomer pre-filter. "
             "Consider lowering --esmfold_plddt_threshold. "
             "Proceeding with all designs for ranking.")
         passing = all_designs
@@ -5956,7 +6138,8 @@ def main():
             dry_run=args.dry_run,
             site_resnums=site_resnums,
             target_residues=tchain.get("residues"),
-            boltz_devices=args.boltz_devices)
+            boltz_devices=args.boltz_devices,
+            n_tag=args.n_tag, c_tag=args.c_tag)
     else:
         # --reprediction OFF: only backbone-only tools get Boltz-2
         backbone_designs = [d for d in passing
@@ -5974,7 +6157,8 @@ def main():
                 dry_run=args.dry_run,
                 site_resnums=site_resnums,
                 target_residues=tchain.get("residues"),
-                boltz_devices=args.boltz_devices)
+                boltz_devices=args.boltz_devices,
+                n_tag=args.n_tag, c_tag=args.c_tag)
 
         # For native designs: ensure complex_cif or binder_pdb is set
         # (BindCraft stores binder_pdb, BoltzGen stores complex_cif,
@@ -6075,7 +6259,7 @@ def main():
             log(f"  rank {d['rank']:3d}  {d['design_id']:<22s}  "
                 f"score={d['combined_score']:.3f}  "
                 f"iPTM={d.get('_resolved_iptm', d.get('boltz_iptm', 0)):.3f}  "
-                f"ESMFold={d.get('esmfold_plddt', 0):.1f}  "
+                f"monomer_pLDDT={d.get('esmfold_plddt', 0):.1f}  "
                 f"minPAE={pae_str}")
 
     log(f"\nOutput directory: {out_dir}")

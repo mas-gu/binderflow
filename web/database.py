@@ -230,7 +230,7 @@ async def list_all_jobs(status: str | None = None, limit: int = 100,
                     d = dict(r)
                     # Tag with machine name from filename if not set
                     if not d.get("machine"):
-                        d["machine"] = db_path.stem.replace("binderflow_", "")
+                        d["machine"] = db_path.stem.replace("proteaflow_", "")
                     all_jobs.append(d)
         except Exception:
             pass
@@ -257,7 +257,7 @@ async def get_job_any_machine(job_id: str) -> dict | None:
                 if row:
                     d = dict(row)
                     if not d.get("machine"):
-                        d["machine"] = db_path.stem.replace("binderflow_", "")
+                        d["machine"] = db_path.stem.replace("proteaflow_", "")
                     return d
         except Exception:
             pass
@@ -310,8 +310,8 @@ async def job_exists_for_path(out_dir: str) -> bool:
 
 
 def _iter_all_dbs():
-    """Yield all binderflow_*.db files in the shared directory."""
-    return sorted(_SHARED_DIR.glob("binderflow_*.db"))
+    """Yield all proteaflow_*.db files in the shared directory."""
+    return sorted(_SHARED_DIR.glob("proteaflow_*.db"))
 
 
 def _read_shared() -> dict:

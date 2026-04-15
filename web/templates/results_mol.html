@@ -1,0 +1,960 @@
+{% extends "base.html" %}
+{% block title %}ProteaFlow — Molecules: {{ job.name }}{% endblock %}
+
+{% block head %}
+<!-- AG Grid -->
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@33.1.1/dist/ag-grid-community.min.js"></script>
+<!-- Plotly -->
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<!-- 3Dmol.js -->
+<script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="flex justify-between items-center mb-4">
+    <div>
+        <h1 class="text-2xl font-bold">{{ job.name }}</h1>
+        <p class="text-sm text-slate-400">
+            {% if job.project %}<span class="text-blue-400">{{ job.project }}</span> &middot; {% endif %}
+            {% if job.job_type == 'mol_rerank' %}
+            <span class="text-amber-400">Molecule Rerank</span>
+            {% else %}
+            {{ job.tools }} &middot; {{ job.mode }} mode
+            &middot; <span class="text-emerald-400">Molecule Design</span>
+            {% endif %}
+            {% if job.username %} &middot; by {{ job.username }}{% endif %}
+        </p>
+    </div>
+    <div class="flex gap-2 items-center">
+        <span id="filter-status" class="text-xs text-slate-500"></span>
+        <button id="filter-toggle" class="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-1 rounded">Filters</button>
+        <a href="/api/results/{{ job.id }}/rankings/csv"
+           class="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-1 rounded">Download CSV</a>
+        <a href="/"
+           class="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-1 rounded">Back to Dashboard</a>
+    </div>
+</div>
+
+<!-- Status badge -->
+{% if job.status == 'running' %}
+<div class="mb-4 px-3 py-1 bg-blue-900/40 border border-blue-700 rounded text-sm text-blue-300 inline-block">Running</div>
+{% elif job.status == 'completed' %}
+<div class="mb-4 px-3 py-1 bg-emerald-900/40 border border-emerald-700 rounded text-sm text-emerald-300 inline-block">Completed</div>
+{% elif job.status == 'failed' %}
+<div class="mb-4 px-3 py-1 bg-red-900/40 border border-red-700 rounded text-sm text-red-300 inline-block">Failed</div>
+{% endif %}
+
+<!-- Tabs -->
+<div class="border-b border-slate-700 mb-4">
+    <div class="flex gap-1">
+        <button class="tab-btn active px-4 py-2 text-sm rounded-t border-b-2 border-blue-500 text-blue-400" data-tab="rankings">Rankings</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="scatter">Scatter</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="radar">Radar</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="tools">Tools</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="dashboard">Dashboard</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-slate-400 hover:text-white" data-tab="detail">Design Detail</button>
+        <a href="/rerank?results_dir={{ job.out_dir }}&type=mol_rerank"
+           class="px-4 py-2 text-sm rounded-t border-b-2 border-transparent text-amber-400 hover:text-amber-300 ml-auto">
+            Rerank
+        </a>
+    </div>
+</div>
+
+<!-- Main content + filter sidebar -->
+<div class="flex gap-4">
+    <!-- Tab panels -->
+    <div class="flex-1 min-w-0">
+
+        <!-- Rankings -->
+        <div id="tab-rankings" class="tab-panel">
+            <div id="rankings-grid" class="ag-theme-alpine-dark" style="height: 600px; width: 100%;">
+                <!-- Skeleton loading -->
+                <div id="grid-skeleton" class="p-2">
+                    <div class="skeleton-row" style="width:100%"></div>
+                    <div class="skeleton-row" style="width:95%"></div>
+                    <div class="skeleton-row" style="width:100%"></div>
+                    <div class="skeleton-row" style="width:92%"></div>
+                    <div class="skeleton-row" style="width:100%"></div>
+                    <div class="skeleton-row" style="width:97%"></div>
+                    <div class="skeleton-row" style="width:100%"></div>
+                    <div class="skeleton-row" style="width:94%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scatter -->
+        <div id="tab-scatter" class="tab-panel hidden">
+            <div class="flex gap-3 mb-3 items-center">
+                <select id="scatter-preset" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm">
+                    <option value="">Custom axes</option>
+                </select>
+                <select id="scatter-x" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm"></select>
+                <span class="text-slate-500">vs</span>
+                <select id="scatter-y" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm"></select>
+            </div>
+            <div id="scatter-plot" style="height: 550px;"></div>
+        </div>
+
+        <!-- Radar Chart -->
+        <div id="tab-radar" class="tab-panel hidden">
+            <div class="flex gap-3 mb-3 items-center">
+                <label class="text-sm text-slate-400">Design:</label>
+                <select id="radar-select" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm flex-1"></select>
+                <label class="text-sm text-slate-400 ml-4">Background:</label>
+                <select id="radar-bg" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm">
+                    <option value="none">None</option>
+                    <option value="tools" selected>Tool medians</option>
+                    <option value="top10">Top 10 vs All</option>
+                </select>
+            </div>
+            <div id="radar-plot" style="height: 550px;"></div>
+        </div>
+
+        <!-- Tool Comparison -->
+        <div id="tab-tools" class="tab-panel hidden">
+            <div class="flex gap-3 mb-3 items-center">
+                <label class="text-sm text-slate-400">Plot:</label>
+                <select id="tool-mode" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm">
+                    <option value="box">Box Plot</option>
+                    <option value="histogram">Histogram</option>
+                </select>
+                <label class="text-sm text-slate-400 ml-4">Metric:</label>
+                <select id="tool-metric" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm"></select>
+            </div>
+            <div id="tool-plot" style="height: 550px;"></div>
+        </div>
+
+        <!-- Dashboard -->
+        <div id="tab-dashboard" class="tab-panel hidden">
+            <img id="dashboard-img" src="/api/results/{{ job.id }}/dashboard" class="max-w-full rounded-lg border border-slate-700"
+                 onerror="this.parentElement.innerHTML='<p class=\'text-slate-400 p-8\'>Dashboard not available</p>'">
+        </div>
+
+        <!-- Design Detail -->
+        <div id="tab-detail" class="tab-panel hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                    <div class="flex gap-2 mb-3 items-center">
+                        <label class="text-sm text-slate-400">Design:</label>
+                        <select id="detail-select" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm flex-1"></select>
+                    </div>
+                    <!-- Score cards -->
+                    <div id="score-cards" class="grid grid-cols-4 gap-2"></div>
+                    <!-- Property tables -->
+                    <div id="prop-tables" class="mt-3 bg-slate-900 border border-slate-700 rounded p-3"></div>
+                    <!-- SMILES -->
+                    <div class="mt-3 bg-slate-900 border border-slate-700 rounded p-3">
+                        <div class="flex justify-between items-center mb-1">
+                            <label class="text-xs text-slate-500">SMILES</label>
+                            <button id="copy-smiles-btn" class="text-xs text-blue-400 hover:text-blue-300 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700"
+                                    title="Copy SMILES to clipboard">Copy</button>
+                        </div>
+                        <pre id="detail-smiles" class="text-sm text-green-400 mt-1 break-all whitespace-pre-wrap font-mono select-all"></pre>
+                    </div>
+                </div>
+                <div>
+                    <div id="mol-viewer" class="bg-slate-900 border border-slate-700 rounded-lg" style="height: 500px; position: relative;"></div>
+                    <p class="text-xs text-slate-500 mt-1">Grey cartoon: pocket | Colored sticks: molecule (colored by tool)</p>
+                    <div id="contact-summary" class="mt-2 bg-slate-900 border border-slate-700 rounded p-2">
+                        <p class="text-slate-500 text-xs">Select a design to view contacts</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filter Sidebar (hidden by default) -->
+    <div id="filter-sidebar" class="hidden w-64 shrink-0">
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-4 sticky top-4 space-y-4">
+            <h3 class="text-sm font-semibold text-slate-300">Filters</h3>
+
+            <!-- Score thresholds -->
+            <div class="space-y-2">
+                <p class="text-xs text-slate-500 font-medium">Score Thresholds</p>
+                <div><label class="text-xs text-slate-400">Min combined score</label>
+                    <input type="number" id="f-min-combined" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="-10" step="0.05"></div>
+                <div><label class="text-xs text-slate-400">Min QED</label>
+                    <input type="number" id="f-min-qed" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="0" step="0.05" min="0" max="1"></div>
+                <div><label class="text-xs text-slate-400">Max SA score</label>
+                    <input type="number" id="f-max-sa" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="10" step="0.5" min="1" max="10"></div>
+                <div><label class="text-xs text-slate-400">Min Vina score</label>
+                    <input type="number" id="f-min-vina" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="-20" step="0.5"></div>
+                <div><label class="text-xs text-slate-400">Max Vina score</label>
+                    <input type="number" id="f-max-vina" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="10" step="0.5"></div>
+                <div><label class="text-xs text-slate-400">Max MW</label>
+                    <input type="number" id="f-max-mw" class="filter-input w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs" value="1000" step="50"></div>
+            </div>
+
+            <!-- Tools -->
+            <div>
+                <p class="text-xs text-slate-500 font-medium mb-1">Tools</p>
+                <div id="filter-tools" class="space-y-1"></div>
+                <div class="flex gap-2 mt-1">
+                    <button id="tools-all" type="button" class="text-xs text-blue-400 hover:text-blue-300">All</button>
+                    <button id="tools-none" type="button" class="text-xs text-blue-400 hover:text-blue-300">None</button>
+                </div>
+            </div>
+
+            <button id="filter-reset" type="button" class="w-full bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 px-3 py-1 rounded">Reset All</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ============================================================
+// Jinja-injected constants
+// ============================================================
+const JOB_ID = '{{ job.id }}';
+const _RAW_TOOL_COLORS = {{ tool_colors_json | safe }};
+// Resolve library_* prefixed tools to the library base color
+function getToolColor(tool) {
+    return _RAW_TOOL_COLORS[tool] || (tool.startsWith('library') ? (_RAW_TOOL_COLORS['library'] || '#FF9800') : '#888');
+}
+const TOOL_COLORS = new Proxy(_RAW_TOOL_COLORS, { get: (t, k) => getToolColor(k) });
+const SCATTER_PRESETS = {{ scatter_presets_json | safe }};
+const HIGHER_BETTER = new Set({{ higher_better_json | safe }});
+const LOWER_BETTER = new Set({{ lower_better_json | safe }});
+const DEFAULT_COLUMNS = {{ default_columns_json | safe }};
+const TOOL_METRICS = {{ tool_metrics_json | safe }};
+
+// ============================================================
+// Data Store
+// ============================================================
+let allData = [];
+let filteredData = [];
+let filterState = {
+    min_combined: -10,
+    min_qed: 0,
+    max_sa: 10,
+    min_vina: -20,
+    max_vina: 10,
+    max_mw: 1000,
+    active_tools: [],
+};
+let selectedDesign = null;
+let gridApi = null;
+let activeTab = 'rankings';
+const dirtyTabs = new Set();
+
+// ============================================================
+// Tab Switching
+// ============================================================
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+        // Update button styles
+        document.querySelectorAll('.tab-btn').forEach(b => {
+            b.classList.remove('active', 'border-blue-500', 'text-blue-400');
+            b.classList.add('border-transparent', 'text-slate-400');
+        });
+        btn.classList.add('active', 'border-blue-500', 'text-blue-400');
+        btn.classList.remove('border-transparent', 'text-slate-400');
+        // Show/hide panels
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+        document.getElementById('tab-' + tab)?.classList.remove('hidden');
+        activeTab = tab;
+        // Refresh dirty tabs
+        if (dirtyTabs.has(tab)) {
+            dirtyTabs.delete(tab);
+            updateActiveTab();
+        }
+        // Resize plotly charts on tab switch
+        if (tab === 'scatter') {
+            const el = document.getElementById('scatter-plot');
+            if (el && el.data) Plotly.Plots.resize(el);
+        } else if (tab === 'radar') {
+            const el = document.getElementById('radar-plot');
+            if (el && el.data) Plotly.Plots.resize(el);
+        } else if (tab === 'tools') {
+            const el = document.getElementById('tool-plot');
+            if (el && el.data) Plotly.Plots.resize(el);
+        }
+    });
+});
+
+// Filter toggle
+document.getElementById('filter-toggle')?.addEventListener('click', () => {
+    document.getElementById('filter-sidebar')?.classList.toggle('hidden');
+});
+
+// ============================================================
+// Filter Engine
+// ============================================================
+function applyFilters() {
+    filteredData = allData.filter(row => {
+        if (row.combined_score != null && row.combined_score < filterState.min_combined) return false;
+        if (row.qed != null && row.qed < filterState.min_qed) return false;
+        if (row.sa_score != null && row.sa_score > filterState.max_sa) return false;
+        if (row.vina_score != null && row.vina_score < filterState.min_vina) return false;
+        if (row.vina_score != null && row.vina_score > filterState.max_vina) return false;
+        if (row.mw != null && row.mw > filterState.max_mw) return false;
+        if (filterState.active_tools.length > 0 && !filterState.active_tools.includes(row.tool)) return false;
+        return true;
+    });
+    updateActiveTab();
+    ['rankings', 'scatter', 'tools'].forEach(t => {
+        if (t !== activeTab) dirtyTabs.add(t);
+    });
+    updateFilterStatus();
+}
+
+function updateActiveTab() {
+    switch (activeTab) {
+        case 'rankings': updateGrid(); break;
+        case 'scatter': updateScatter(); break;
+        case 'radar': updateRadar(); break;
+        case 'tools': updateToolComparison(); break;
+    }
+}
+
+function updateFilterStatus() {
+    const el = document.getElementById('filter-status');
+    if (el) el.textContent = `Showing ${filteredData.length} / ${allData.length} molecules`;
+}
+
+function initFilterPanel() {
+    // Tool checkboxes
+    const toolDiv = document.getElementById('filter-tools');
+    if (!toolDiv) return;
+    const tools = [...new Set(allData.map(d => d.tool).filter(Boolean))].sort();
+    filterState.active_tools = tools.slice();
+    toolDiv.innerHTML = '';
+    tools.forEach(tool => {
+        const color = TOOL_COLORS[tool] || '#888';
+        const label = document.createElement('label');
+        label.className = 'flex items-center gap-2 cursor-pointer text-sm';
+        label.innerHTML = `<input type="checkbox" checked data-tool="${tool}" class="tool-cb border-slate-600">
+            <span style="color:${color}">${tool}</span>`;
+        toolDiv.appendChild(label);
+    });
+
+    // Wire filter controls
+    document.querySelectorAll('.filter-input').forEach(el => {
+        el.addEventListener('change', readFiltersAndApply);
+    });
+    document.querySelectorAll('.tool-cb').forEach(el => {
+        el.addEventListener('change', readFiltersAndApply);
+    });
+
+    // All/None buttons
+    document.getElementById('tools-all')?.addEventListener('click', () => {
+        document.querySelectorAll('.tool-cb').forEach(cb => cb.checked = true);
+        readFiltersAndApply();
+    });
+    document.getElementById('tools-none')?.addEventListener('click', () => {
+        document.querySelectorAll('.tool-cb').forEach(cb => cb.checked = false);
+        readFiltersAndApply();
+    });
+    document.getElementById('filter-reset')?.addEventListener('click', resetFilters);
+}
+
+function readFiltersAndApply() {
+    filterState.min_combined = parseFloat(document.getElementById('f-min-combined')?.value) || -10;
+    filterState.min_qed = parseFloat(document.getElementById('f-min-qed')?.value) || 0;
+    filterState.max_sa = parseFloat(document.getElementById('f-max-sa')?.value) || 10;
+    filterState.min_vina = parseFloat(document.getElementById('f-min-vina')?.value) || -20;
+    filterState.max_vina = parseFloat(document.getElementById('f-max-vina')?.value) || 10;
+    filterState.max_mw = parseFloat(document.getElementById('f-max-mw')?.value) || 1000;
+    filterState.active_tools = [...document.querySelectorAll('.tool-cb:checked')].map(cb => cb.dataset.tool);
+    applyFilters();
+}
+
+function resetFilters() {
+    document.getElementById('f-min-combined').value = -10;
+    document.getElementById('f-min-qed').value = 0;
+    document.getElementById('f-max-sa').value = 10;
+    document.getElementById('f-min-vina').value = -20;
+    document.getElementById('f-max-vina').value = 10;
+    document.getElementById('f-max-mw').value = 1000;
+    document.querySelectorAll('.tool-cb').forEach(cb => cb.checked = true);
+    readFiltersAndApply();
+}
+
+// ============================================================
+// Rankings Grid
+// ============================================================
+let colArrays = {};
+
+function scoreColor(col, val, allVals) {
+    if (val == null) return null;
+    const nums = allVals.filter(v => v != null);
+    if (!nums.length) return null;
+    const min = Math.min(...nums), max = Math.max(...nums);
+    if (min === max) return null;
+    let t = (val - min) / (max - min);
+    if (LOWER_BETTER.has(col)) t = 1 - t;
+    if (!HIGHER_BETTER.has(col) && !LOWER_BETTER.has(col)) return null;
+    const r = Math.round(220 - 180 * t);
+    const g = Math.round(60 + 160 * t);
+    return `rgba(${r}, ${g}, 80, 0.25)`;
+}
+
+function initGrid() {
+    const allCols = Object.keys(allData[0] || {});
+    allCols.forEach(c => { colArrays[c] = allData.map(r => r[c]); });
+
+    const columnDefs = allCols
+        .filter(c => DEFAULT_COLUMNS.includes(c))
+        .map(c => ({
+            field: c, headerName: c, sortable: true, filter: true, resizable: true,
+            width: c === 'smiles' ? 250 : c === 'design_id' ? 180 : 110,
+            hide: c === 'smiles',
+            cellStyle: params => {
+                const bg = scoreColor(c, params.value, colArrays[c]);
+                return bg ? { backgroundColor: bg } : null;
+            },
+            valueFormatter: params => {
+                if (params.value == null) return '';
+                if (typeof params.value === 'number' && params.value.toFixed) return params.value.toFixed(3);
+                return params.value;
+            },
+        }));
+
+    const gridDiv = document.getElementById('rankings-grid');
+    gridApi = agGrid.createGrid(gridDiv, {
+        columnDefs, rowData: filteredData,
+        defaultColDef: { sortable: true, filter: true, resizable: true },
+        rowSelection: 'single',
+        onRowClicked: (e) => selectDesign(e.data),
+        animateRows: true, theme: 'legacy',
+    });
+}
+
+function updateGrid() {
+    if (gridApi) gridApi.setGridOption('rowData', filteredData);
+}
+
+// ============================================================
+// Scatter Plot
+// ============================================================
+function updateScatter() {
+    const xCol = document.getElementById('scatter-x')?.value;
+    const yCol = document.getElementById('scatter-y')?.value;
+    if (!xCol || !yCol || !filteredData.length) return;
+
+    const tools = [...new Set(filteredData.map(d => d.tool))];
+    const traces = tools.map(tool => {
+        const pts = filteredData.filter(d => d.tool === tool && d[xCol] != null && d[yCol] != null);
+        return {
+            x: pts.map(d => d[xCol]), y: pts.map(d => d[yCol]),
+            text: pts.map(d => d.design_id), customdata: pts,
+            mode: 'markers', type: 'scatter', name: tool,
+            marker: { color: TOOL_COLORS[tool] || '#888', size: 8, opacity: 0.8 },
+        };
+    });
+
+    const layout = {
+        xaxis: { title: { text: xCol, font: { size: 12 } }, color: '#94a3b8',
+                 gridcolor: 'rgba(255,255,255,0.04)', gridwidth: 1, zeroline: false },
+        yaxis: { title: { text: yCol, font: { size: 12 } }, color: '#94a3b8',
+                 gridcolor: 'rgba(255,255,255,0.04)', gridwidth: 1, zeroline: false },
+        plot_bgcolor: '#0f172a', paper_bgcolor: '#0f172a',
+        font: { color: '#94a3b8', size: 11 },
+        legend: { font: { color: '#cbd5e1', size: 11 }, bgcolor: 'rgba(0,0,0,0)' },
+        margin: { t: 20, r: 20, b: 50, l: 60 },
+        hoverlabel: { bgcolor: '#1e293b', bordercolor: 'rgba(255,255,255,0.1)',
+                      font: { color: '#e2e8f0', size: 12 } },
+    };
+
+    Plotly.newPlot('scatter-plot', traces, layout, { responsive: true });
+
+    document.getElementById('scatter-plot').on('plotly_click', (data) => {
+        if (data.points.length > 0) {
+            const d = data.points[0].customdata;
+            if (d) selectDesign(d);
+        }
+    });
+}
+
+function initScatterControls() {
+    const numCols = Object.keys(allData[0] || {}).filter(c =>
+        allData.some(r => typeof r[c] === 'number'));
+    const xSel = document.getElementById('scatter-x');
+    const ySel = document.getElementById('scatter-y');
+    numCols.forEach(c => { xSel.add(new Option(c, c)); ySel.add(new Option(c, c)); });
+    // Default axes
+    xSel.value = 'qed'; ySel.value = 'vina_score';
+
+    const presetSel = document.getElementById('scatter-preset');
+    Object.keys(SCATTER_PRESETS).forEach(name => presetSel.add(new Option(name, name)));
+    presetSel.addEventListener('change', () => {
+        const p = SCATTER_PRESETS[presetSel.value];
+        if (p) { xSel.value = p[0]; ySel.value = p[1]; updateScatter(); }
+    });
+    xSel.addEventListener('change', updateScatter);
+    ySel.addEventListener('change', updateScatter);
+}
+
+// ============================================================
+// Tool Comparison
+// ============================================================
+function updateToolComparison() {
+    const metric = document.getElementById('tool-metric')?.value;
+    const mode = document.getElementById('tool-mode')?.value;
+    if (!metric || !filteredData.length) return;
+
+    const tools = [...new Set(filteredData.map(d => d.tool))].sort();
+    let traces = [];
+
+    if (mode === 'box') {
+        traces = tools.map(tool => ({
+            y: filteredData.filter(d => d.tool === tool && d[metric] != null).map(d => d[metric]),
+            type: 'box', name: tool,
+            marker: { color: TOOL_COLORS[tool] || '#888' },
+            boxpoints: 'outliers',
+        }));
+    } else {
+        traces = tools.map(tool => ({
+            x: filteredData.filter(d => d.tool === tool && d[metric] != null).map(d => d[metric]),
+            type: 'histogram', name: tool,
+            marker: { color: TOOL_COLORS[tool] || '#888' },
+            opacity: 0.7,
+        }));
+    }
+
+    const layout = {
+        xaxis: { title: { text: mode === 'histogram' ? metric : '', font: { size: 12 } },
+                 color: '#94a3b8', gridcolor: 'rgba(255,255,255,0.04)', zeroline: false },
+        yaxis: { title: { text: mode === 'box' ? metric : 'Count', font: { size: 12 } },
+                 color: '#94a3b8', gridcolor: 'rgba(255,255,255,0.04)', zeroline: false },
+        plot_bgcolor: '#0f172a', paper_bgcolor: '#0f172a',
+        font: { color: '#94a3b8', size: 11 },
+        legend: { font: { color: '#cbd5e1', size: 11 }, bgcolor: 'rgba(0,0,0,0)' },
+        margin: { t: 20, r: 20, b: 50, l: 60 },
+        barmode: mode === 'histogram' ? 'overlay' : undefined,
+        hoverlabel: { bgcolor: '#1e293b', bordercolor: 'rgba(255,255,255,0.1)',
+                      font: { color: '#e2e8f0', size: 12 } },
+    };
+
+    Plotly.newPlot('tool-plot', traces, layout, { responsive: true });
+}
+
+function initToolControls() {
+    const metricSel = document.getElementById('tool-metric');
+    TOOL_METRICS.forEach(m => metricSel.add(new Option(m, m)));
+    metricSel.value = TOOL_METRICS[0] || 'combined_score';
+    metricSel.addEventListener('change', updateToolComparison);
+    document.getElementById('tool-mode')?.addEventListener('change', updateToolComparison);
+}
+
+// ============================================================
+// Radar Chart (Molecule Developability Profile)
+// ============================================================
+const RADAR_AXES = [
+    { key: 'vina_score', label: 'Binding', norm: v => v == null ? 0 : Math.max(0, Math.min(1, -v / 12)), higher: true },
+    { key: 'qed', label: 'Drug-likeness', norm: v => v ?? 0, higher: true },
+    { key: 'sa_score', label: 'Synthesizability', norm: v => v == null ? 0 : Math.max(0, 1 - (v - 1) / 9), higher: true },
+    { key: 'pocket_fit', label: 'Pocket Fit', norm: v => v == null ? 0 : Math.max(0, (v - 0.5) / 0.5), higher: true },
+    { key: 'ligand_efficiency', label: 'Lig. Efficiency', norm: v => v == null ? 0 : Math.max(0, Math.min(1, v / 0.5)), higher: true },
+    { key: 'fsp3', label: 'Fsp3', norm: v => v ?? 0, higher: true },
+];
+
+function updateRadar() {
+    const sel = document.getElementById('radar-select');
+    const bgMode = document.getElementById('radar-bg')?.value || 'none';
+    if (!sel?.value || !filteredData.length) return;
+
+    const d = filteredData.find(r => r.design_id === sel.value);
+    if (!d) return;
+
+    const labels = RADAR_AXES.map(a => a.label);
+    const traces = [];
+
+    // Background traces
+    if (bgMode === 'tools') {
+        const tools = [...new Set(filteredData.map(r => r.tool))];
+        tools.forEach(tool => {
+            const toolData = filteredData.filter(r => r.tool === tool);
+            const medians = RADAR_AXES.map(a => {
+                const vals = toolData.map(r => a.norm(r[a.key])).filter(v => v > 0);
+                vals.sort((a, b) => a - b);
+                return vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+            });
+            traces.push({
+                type: 'scatterpolar', r: [...medians, medians[0]], theta: [...labels, labels[0]],
+                name: tool + ' (median)', fill: 'toself',
+                fillcolor: (TOOL_COLORS[tool] || '#888') + '15',
+                line: { color: (TOOL_COLORS[tool] || '#888') + '60', width: 1 },
+            });
+        });
+    } else if (bgMode === 'top10') {
+        const top10 = filteredData.slice(0, 10);
+        const top10Med = RADAR_AXES.map(a => {
+            const vals = top10.map(r => a.norm(r[a.key])).sort((a, b) => a - b);
+            return vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+        });
+        const allMed = RADAR_AXES.map(a => {
+            const vals = filteredData.map(r => a.norm(r[a.key])).filter(v => v > 0).sort((a, b) => a - b);
+            return vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+        });
+        traces.push({
+            type: 'scatterpolar', r: [...allMed, allMed[0]], theta: [...labels, labels[0]],
+            name: 'All (median)', fill: 'toself',
+            fillcolor: 'rgba(100,116,139,0.1)', line: { color: 'rgba(100,116,139,0.4)', width: 1 },
+        });
+        traces.push({
+            type: 'scatterpolar', r: [...top10Med, top10Med[0]], theta: [...labels, labels[0]],
+            name: 'Top 10 (median)', fill: 'toself',
+            fillcolor: 'rgba(16,185,129,0.1)', line: { color: 'rgba(16,185,129,0.5)', width: 1.5 },
+        });
+    }
+
+    // Selected design trace (on top)
+    const values = RADAR_AXES.map(a => a.norm(d[a.key]));
+    traces.push({
+        type: 'scatterpolar', r: [...values, values[0]], theta: [...labels, labels[0]],
+        name: d.design_id, fill: 'toself',
+        fillcolor: 'rgba(59,130,246,0.2)',
+        line: { color: '#3b82f6', width: 2.5 },
+        marker: { size: 6, color: '#3b82f6' },
+    });
+
+    const layout = {
+        polar: {
+            bgcolor: '#0f172a',
+            radialaxis: { visible: true, range: [0, 1], color: '#475569',
+                         gridcolor: 'rgba(255,255,255,0.05)', linecolor: 'rgba(255,255,255,0.05)' },
+            angularaxis: { color: '#94a3b8', gridcolor: 'rgba(255,255,255,0.05)',
+                          linecolor: 'rgba(255,255,255,0.08)' },
+        },
+        paper_bgcolor: '#0f172a',
+        font: { color: '#94a3b8', size: 12 },
+        legend: { font: { color: '#cbd5e1', size: 11 }, bgcolor: 'rgba(0,0,0,0)', x: 1.1 },
+        margin: { t: 40, r: 120, b: 40, l: 80 },
+        showlegend: true,
+    };
+
+    Plotly.newPlot('radar-plot', traces, layout, { responsive: true });
+}
+
+function initRadarControls() {
+    const sel = document.getElementById('radar-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+    filteredData.forEach(d => sel.add(new Option(`#${d.rank} ${d.design_id}`, d.design_id)));
+    if (filteredData.length) sel.value = filteredData[0].design_id;
+    sel.addEventListener('change', updateRadar);
+    document.getElementById('radar-bg')?.addEventListener('change', updateRadar);
+}
+
+// ============================================================
+// Design Detail
+// ============================================================
+// Score highlight cards (top row)
+const SCORE_CARD_DEFS = [
+    { key: 'combined_score', label: 'Combined Score', fmt: v => v?.toFixed(3) ?? '--', color: 'text-blue-400' },
+    { key: 'qed', label: 'QED', fmt: v => v?.toFixed(3) ?? '--', color: 'text-emerald-400' },
+    { key: 'sa_score', label: 'SA Score', fmt: v => v?.toFixed(2) ?? '--', color: 'text-amber-400' },
+    { key: 'vina_score', label: 'Vina Score', fmt: v => v != null ? v.toFixed(2) + ' kcal/mol' : '--', color: 'text-red-400' },
+];
+
+// Physicochemical properties table (left column)
+const PHYSCHEM_PROPS = [
+    { key: 'formula', label: 'Chemical formula' },
+    { key: 'mw', label: 'Molecular weight', fmt: v => v?.toFixed(1) != null ? v.toFixed(1) + ' g/mol' : '--' },
+    { key: 'num_heavy_atoms', label: 'Heavy atoms' },
+    { key: 'num_rotatable_bonds', label: 'Rotatable bonds' },
+    { key: 'hbd', label: 'H-bond donors' },
+    { key: 'hba', label: 'H-bond acceptors' },
+    { key: 'molar_refractivity', label: 'Molar refractivity', fmt: v => v?.toFixed(1) ?? '--' },
+    { key: 'tpsa', label: 'TPSA', fmt: v => v != null ? v.toFixed(1) + ' A\u00B2' : '--' },
+    { key: 'fsp3', label: 'Fsp\u00B3', fmt: v => v?.toFixed(2) ?? '--' },
+    { key: 'logp', label: 'LogP', fmt: v => v?.toFixed(2) ?? '--' },
+];
+
+// Medicinal chemistry table (right column)
+const MEDCHEM_PROPS = [
+    { key: 'lipinski_pass', label: 'Lipinski rule', fmt: v => v === true ? 'Pass' : v === false ? 'Fail' : (v == null ? '--' : (v == 0 || v === 'True' ? 'Pass' : 'Fail')),
+      colorFn: v => (v === true || v == 0 || v === 'True') ? 'text-emerald-400' : 'text-red-400' },
+    { key: 'veber_pass', label: 'Veber rule', fmt: v => v === true ? 'Pass' : v === false ? 'Fail' : (v == null ? '--' : (v === 'True' ? 'Pass' : 'Fail')),
+      colorFn: v => (v === true || v === 'True') ? 'text-emerald-400' : 'text-red-400' },
+    { key: 'lipinski_violations', label: 'Lipinski violations' },
+    { key: 'qed', label: 'Druglikeness (QED)', fmt: v => v != null ? (v * 100).toFixed(1) : '--' },
+    { key: 'sa_score', label: 'Synth. complexity', fmt: v => v?.toFixed(1) ?? '--' },
+];
+
+function selectDesign(d) {
+    if (!d) return;
+    selectedDesign = d;
+    updateDetailPanel(d);
+    // Highlight in grid
+    if (gridApi) {
+        gridApi.forEachNode(node => {
+            if (node.data?.design_id === d.design_id) node.setSelected(true);
+        });
+    }
+    // Update radar selection
+    const radarSel = document.getElementById('radar-select');
+    if (radarSel) { radarSel.value = d.design_id; updateRadar(); }
+}
+
+function _renderPropTable(title, defs, d) {
+    const rows = defs.map(def => {
+        const val = d[def.key];
+        const display = def.fmt ? def.fmt(val) : (val ?? '--');
+        const cls = def.colorFn ? def.colorFn(val) : 'text-slate-200';
+        return `<tr class="border-b border-slate-800">
+            <td class="py-1.5 pr-4 text-xs text-slate-400">${def.label}</td>
+            <td class="py-1.5 text-sm font-medium ${cls}">${display}</td>
+        </tr>`;
+    }).join('');
+    return `<div>
+        <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 border-b border-slate-600 pb-1">${title}</h4>
+        <table class="w-full"><tbody>${rows}</tbody></table>
+    </div>`;
+}
+
+function updateDetailPanel(d) {
+    // Update selector dropdown
+    const sel = document.getElementById('detail-select');
+    if (sel) sel.value = d.design_id;
+
+    // Score highlight cards (top row)
+    const cardsDiv = document.getElementById('score-cards');
+    if (cardsDiv) {
+        cardsDiv.innerHTML = SCORE_CARD_DEFS.map(def => {
+            const val = d[def.key];
+            return `<div class="bg-slate-900 border border-slate-700 rounded p-2 score-card">
+                <p class="text-xs text-slate-500">${def.label}</p>
+                <p class="text-lg font-semibold ${def.color}">${def.fmt(val)}</p>
+            </div>`;
+        }).join('');
+    }
+
+    // Property tables (two-column: physicochemical + medicinal chemistry)
+    const propsDiv = document.getElementById('prop-tables');
+    if (propsDiv) {
+        propsDiv.innerHTML = `<div class="grid grid-cols-2 gap-4">
+            ${_renderPropTable('Physicochemical properties', PHYSCHEM_PROPS, d)}
+            ${_renderPropTable('Medicinal chemistry', MEDCHEM_PROPS, d)}
+        </div>`;
+    }
+
+    // SMILES
+    const smilesEl = document.getElementById('detail-smiles');
+    if (smilesEl) smilesEl.textContent = d.smiles || '(no SMILES available)';
+
+    // 3D Viewer — load pocket + molecule
+    load3DViewer(d);
+}
+
+const MOL_TOOL_COLORS_3D = {{ tool_colors_json | safe }};
+let molViewer = null;
+
+async function load3DViewer(d) {
+    const viewerDiv = document.getElementById('mol-viewer');
+    if (!viewerDiv) return;
+
+    // Initialize viewer once
+    if (!molViewer) {
+        molViewer = $3Dmol.createViewer(viewerDiv, {
+            backgroundColor: '#0f172a',  // slate-900
+        });
+    }
+    molViewer.clear();
+
+    // Load pocket PDB
+    try {
+        const pocketResp = await fetch(`/api/results/{{ job.id }}/molecule/pocket.pdb`);
+        if (pocketResp.ok) {
+            const pocketData = await pocketResp.text();
+            molViewer.addModel(pocketData, 'pdb');
+            molViewer.setStyle({model: 0}, {cartoon: {color: '#94a3b8', opacity: 0.7}});
+        }
+    } catch (e) { console.warn('Could not load pocket:', e); }
+
+    // Load molecule SDF — prefer docked pose (correct pocket coordinates)
+    const toolColor = MOL_TOOL_COLORS_3D[d.tool] || '#22c55e';
+    let molLoaded = false;
+    try {
+        // Try docked version first (Uni-Dock pose, aligned to pocket)
+        const dockedResp = await fetch(`/api/results/{{ job.id }}/molecule/${d.design_id}_docked.sdf`);
+        if (dockedResp.ok) {
+            const sdfData = await dockedResp.text();
+            molViewer.addModel(sdfData, 'sdf');
+            molLoaded = true;
+        }
+        // Fallback to original SDF
+        if (!molLoaded) {
+            const molResp = await fetch(`/api/results/{{ job.id }}/molecule/${d.design_id}.sdf`);
+            if (molResp.ok) {
+                const sdfData = await molResp.text();
+                molViewer.addModel(sdfData, 'sdf');
+                molLoaded = true;
+            }
+        }
+        if (molLoaded) {
+            molViewer.setStyle({model: 1}, {stick: {colorscheme: 'default', radius: 0.15}});
+            molViewer.addSurface($3Dmol.SurfaceType.VDW, {opacity: 0.3, color: toolColor}, {model: 1});
+        }
+    } catch (e) { console.warn('Could not load molecule:', e); }
+
+    molViewer.zoomTo();
+    molViewer.render();
+
+    // Load and display contacts
+    try {
+        const contactResp = await fetch(`/api/results/{{ job.id }}/contacts/${d.design_id}`);
+        if (contactResp.ok) {
+            const data = await contactResp.json();
+            const contacts = data.contacts || [];
+
+            const CONTACT_COLORS = {
+                'hbond': '#3b82f6',       // blue
+                'salt_bridge': '#ef4444', // red
+                'hydrophobic': '#eab308', // yellow
+                'pi_stacking': '#22c55e', // green
+            };
+
+            // Collect contacting residues by type for stick display
+            const contactResidues = {};  // "chain:resi" -> best contact type
+            const TYPE_PRIORITY = {'hbond': 0, 'salt_bridge': 1, 'pi_stacking': 2, 'hydrophobic': 3};
+
+            contacts.forEach(c => {
+                const color = CONTACT_COLORS[c.type] || '#888';
+                molViewer.addLine({
+                    start: {x: c.protein_coords[0], y: c.protein_coords[1], z: c.protein_coords[2]},
+                    end: {x: c.ligand_coords[0], y: c.ligand_coords[1], z: c.ligand_coords[2]},
+                    color: color,
+                    dashed: true,
+                    dashLength: 0.15,
+                    gapLength: 0.1,
+                    linewidth: 2,
+                });
+
+                // Parse "A:GLU346" -> chain A, resi 346
+                const m = c.protein_residue.match(/^(\w):(\w+?)(\d+)$/);
+                if (m) {
+                    const key = m[1] + ':' + m[3];
+                    const prev = contactResidues[key];
+                    if (!prev || TYPE_PRIORITY[c.type] < TYPE_PRIORITY[prev]) {
+                        contactResidues[key] = c.type;
+                    }
+                }
+            });
+
+            // Show contacting residues as sticks colored by contact type
+            for (const [chainResi, ctype] of Object.entries(contactResidues)) {
+                const [chain, resi] = chainResi.split(':');
+                const color = CONTACT_COLORS[ctype] || '#888';
+                molViewer.setStyle(
+                    {model: 0, chain: chain, resi: parseInt(resi)},
+                    {cartoon: {color: '#94a3b8', opacity: 0.7}, stick: {color: color, radius: 0.12}}
+                );
+            }
+            molViewer.render();
+
+            // Update contact summary
+            updateContactSummary(contacts);
+        }
+    } catch (e) { console.warn('Could not load contacts:', e); }
+}
+
+function updateContactSummary(contacts) {
+    let summaryEl = document.getElementById('contact-summary');
+    if (!summaryEl) return;
+
+    if (!contacts.length) {
+        summaryEl.innerHTML = '<p class="text-slate-500 text-xs">No contacts detected</p>';
+        return;
+    }
+
+    // Count by type
+    const counts = {};
+    const residues = {};
+    contacts.forEach(c => {
+        counts[c.type] = (counts[c.type] || 0) + 1;
+        if (!residues[c.type]) residues[c.type] = new Set();
+        residues[c.type].add(c.protein_residue);
+    });
+
+    const LABELS = {
+        'hbond': {label: 'H-bonds', color: 'text-blue-400', icon: '---'},
+        'salt_bridge': {label: 'Salt bridges', color: 'text-red-400', icon: '+/-'},
+        'hydrophobic': {label: 'Hydrophobic', color: 'text-yellow-400', icon: 'o'},
+        'pi_stacking': {label: 'Pi-stacking', color: 'text-green-400', icon: 'ring'},
+    };
+
+    let html = '<div class="grid grid-cols-2 gap-1">';
+    for (const [type, info] of Object.entries(LABELS)) {
+        const n = counts[type] || 0;
+        const res = residues[type] ? [...residues[type]].join(', ') : '';
+        html += `<div class="text-xs">
+            <span class="${info.color} font-semibold">${info.icon} ${info.label}: ${n}</span>
+            ${res ? `<br><span class="text-slate-500">${res}</span>` : ''}
+        </div>`;
+    }
+    html += '</div>';
+    summaryEl.innerHTML = html;
+}
+
+function initDetailControls() {
+    const sel = document.getElementById('detail-select');
+    if (!sel) return;
+
+    // Populate dropdown
+    sel.innerHTML = '';
+    filteredData.forEach(d => {
+        const rank = d.rank != null ? `#${d.rank}` : '?';
+        const tool = d.tool || '';
+        const opt = new Option(`${rank} ${d.design_id} [${tool}]`, d.design_id);
+        sel.add(opt);
+    });
+
+    sel.addEventListener('change', () => {
+        const d = allData.find(r => r.design_id === sel.value);
+        if (d) selectDesign(d);
+    });
+
+    // Copy SMILES button
+    document.getElementById('copy-smiles-btn')?.addEventListener('click', () => {
+        const smiles = document.getElementById('detail-smiles')?.textContent;
+        if (smiles && smiles !== '(no SMILES available)') {
+            navigator.clipboard.writeText(smiles).then(() => {
+                const btn = document.getElementById('copy-smiles-btn');
+                btn.textContent = 'Copied!';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+            });
+        }
+    });
+
+    // Select first design
+    if (filteredData.length > 0) selectDesign(filteredData[0]);
+}
+
+// ============================================================
+// Data Loading & Init
+// ============================================================
+async function loadData() {
+    try {
+        const resp = await fetch(`/api/results/${JOB_ID}/rankings`);
+        if (!resp.ok) throw new Error('Failed to load rankings');
+        const data = await resp.json();
+        allData = data.rankings || data || [];
+        if (!allData.length) {
+            document.getElementById('rankings-grid').innerHTML =
+                '<p class="text-slate-400 p-8">No rankings data available yet.</p>';
+            return;
+        }
+        filteredData = allData.slice();
+        initFilterPanel();
+        initGrid();
+        initScatterControls();
+        initRadarControls();
+        initToolControls();
+        initDetailControls();
+        updateFilterStatus();
+    } catch (err) {
+        console.error('Failed to load data:', err);
+        document.getElementById('rankings-grid').innerHTML =
+            `<p class="text-red-400 p-8">Error loading data: ${err.message}</p>`;
+    }
+}
+
+// Start
+loadData();
+</script>
+{% endblock %}

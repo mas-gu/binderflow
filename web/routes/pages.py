@@ -1,6 +1,8 @@
 """HTML page routes (Jinja2 templates)."""
 
 import json
+import os
+from pathlib import Path
 
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import RedirectResponse
@@ -12,16 +14,60 @@ from ..config import (
     MODE_ESTIMATES, SCATTER_PRESETS,
     SCORE_COLUMNS_HIGHER_BETTER, SCORE_COLUMNS_LOWER_BETTER, DEFAULT_COLUMNS,
     OUTPUTS_BASE, HOSTNAME,
+    MOLECULE_TOOLS, MOLECULE_TOOL_COLORS, MOLECULE_TOOL_DESCRIPTIONS,
+    MOLECULE_MODE_ESTIMATES, MOLECULE_DEFAULT_TOOLS, MOLECULE_SCORE_WEIGHTS,
+    COMPOUND_LIBRARIES,
 )
 from ..gpu import query_gpus
 from .. import database
+
+
+async def _check_stale_jobs():
+    """Check running jobs for dead PIDs and mark as completed/failed.
+
+    Lightweight — runs on every dashboard load. Only checks local machine jobs.
+    """
+    jobs = await database.list_jobs(status="running")
+    for job in jobs:
+        pid = job.get("pid")
+        if not pid:
+            continue
+        # Check if PID is alive
+        try:
+            os.kill(pid, 0)
+            continue  # alive — skip
+        except (OSError, ProcessLookupError):
+            pass  # dead — check if completed
+
+        out_dir = job.get("out_dir", "")
+        if out_dir and (Path(out_dir) / "rankings.csv").exists():
+            status = "completed"
+        else:
+            log_file = job.get("log_file", "")
+            status = "failed"
+            if log_file and os.path.exists(log_file):
+                try:
+                    with open(log_file) as f:
+                        tail = f.readlines()[-10:]
+                    if any(m in line for line in tail
+                           for m in ("DONE", "dashboard.png", "rankings.csv",
+                                     "summary plot", "total designs")):
+                        status = "completed"
+                except Exception:
+                    pass
+
+        await database.update_job(
+            job["id"], status=status,
+            exit_code=0 if status == "completed" else -1,
+            error_msg="Recovered (stale PID)" if status == "failed" else None,
+        )
 
 router = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _get_username(request: Request) -> str:
-    return request.cookies.get("binderflow_user", "")
+    return request.cookies.get("proteaflow_user", "")
 
 
 def _render(request: Request, name: str, ctx: dict):
@@ -44,20 +90,22 @@ async def login_submit(request: Request, username: str = Form(...)):
                                           {"request": request, "error": "Please enter your name"})
     database.add_shared_user(name)
     response = RedirectResponse("/", status_code=302)
-    response.set_cookie("binderflow_user", name, max_age=30 * 24 * 3600)  # 30 days
+    response.set_cookie("proteaflow_user", name, max_age=30 * 24 * 3600)  # 30 days
     return response
 
 
 @router.get("/logout")
 async def logout():
     response = RedirectResponse("/login", status_code=302)
-    response.delete_cookie("binderflow_user")
+    response.delete_cookie("proteaflow_user")
     return response
 
 
 @router.get("/")
 async def index(request: Request):
     username = _get_username(request)
+    # Check for stale jobs on every dashboard load (lightweight PID check)
+    await _check_stale_jobs()
     # Local jobs for GPU status + active monitoring
     local_jobs = await database.list_jobs(limit=50)
     running = await database.list_jobs(status="running")
@@ -107,6 +155,13 @@ async def launch(request: Request):
         "default_length": DEFAULT_LENGTH,
         "mode_estimates": MODE_ESTIMATES,
         "projects": projects,
+        "molecule_tools": MOLECULE_TOOLS,
+        "molecule_tool_colors": MOLECULE_TOOL_COLORS,
+        "molecule_tool_descriptions": MOLECULE_TOOL_DESCRIPTIONS,
+        "molecule_mode_estimates": MOLECULE_MODE_ESTIMATES,
+        "molecule_default_tools": MOLECULE_DEFAULT_TOOLS,
+        "molecule_score_weights": MOLECULE_SCORE_WEIGHTS,
+        "compound_libraries": COMPOUND_LIBRARIES,
     })
 
 
@@ -120,11 +175,12 @@ async def monitor(request: Request, job_id: str):
 
 
 @router.get("/rerank")
-async def rerank_page(request: Request, results_dir: str = ""):
+async def rerank_page(request: Request, results_dir: str = "", type: str = ""):
     gpus = query_gpus()
     running = await database.list_jobs(status="running")
-    all_completed = await database.list_jobs(status="completed")
-    completed_jobs = [j for j in all_completed if j.get("job_type") == "generate"]
+    all_completed = await database.list_all_jobs(status="completed")
+    completed_jobs = [j for j in all_completed
+                      if j.get("job_type") in ("generate", "molecule")]
     for gpu in gpus:
         for j in running:
             if j["gpu_id"] == gpu.index:
@@ -135,7 +191,10 @@ async def rerank_page(request: Request, results_dir: str = ""):
         "completed_jobs": completed_jobs,
         "tool_colors": TOOL_COLORS,
         "prefill_results_dir": results_dir,
+        "prefill_type": type or "",
+        "score_weights": MOLECULE_SCORE_WEIGHTS,
     })
+
 
 
 @router.get("/results/{job_id}")
@@ -145,6 +204,51 @@ async def results(request: Request, job_id: str):
         from fastapi import HTTPException
         raise HTTPException(404, "Job not found")
 
+    # Route molecule jobs to dedicated results page
+    if job.get("job_type") in ("molecule", "mol_rerank"):
+        return _results_molecule(request, job)
+
+    return _results_binder(request, job)
+
+
+def _results_molecule(request: Request, job: dict):
+    """Render molecule-specific results page."""
+    mol_scatter_presets = {
+        "QED vs Vina Score": ("qed", "vina_score"),
+        "SA vs Vina Score": ("sa_score", "vina_score"),
+        "MW vs QED": ("mw", "qed"),
+        "LogP vs QED": ("logp", "qed"),
+        "Combined Score vs Vina": ("combined_score", "vina_score"),
+        "Combined Score vs QED": ("combined_score", "qed"),
+        "MW vs Vina Score": ("mw", "vina_score"),
+        "TPSA vs LogP": ("tpsa", "logp"),
+        "Pocket Fit vs Vina": ("pocket_fit", "vina_score"),
+        "Pocket Fit vs QED": ("pocket_fit", "qed"),
+        "LE vs QED": ("ligand_efficiency", "qed"),
+        "Fsp3 vs QED": ("fsp3", "qed"),
+    }
+    mol_higher_better = ["combined_score", "qed"]
+    mol_lower_better = ["sa_score", "vina_score", "lipinski_violations"]
+    mol_default_columns = [
+        "rank", "design_id", "tool", "smiles", "combined_score",
+        "qed", "sa_score", "vina_score", "mw", "logp",
+        "hbd", "hba", "tpsa", "lipinski_violations",
+    ]
+    mol_tool_metrics = ["combined_score", "qed", "sa_score", "vina_score", "mw", "logp", "tpsa"]
+
+    return _render(request, "results_mol.html", {
+        "job": job,
+        "tool_colors_json": json.dumps(MOLECULE_TOOL_COLORS),
+        "scatter_presets_json": json.dumps(mol_scatter_presets),
+        "higher_better_json": json.dumps(mol_higher_better),
+        "lower_better_json": json.dumps(mol_lower_better),
+        "default_columns_json": json.dumps(mol_default_columns),
+        "tool_metrics_json": json.dumps(mol_tool_metrics),
+    })
+
+
+def _results_binder(request: Request, job: dict):
+    """Render binder results page (original behavior)."""
     radar_axes = [
         {
             "name": "Binding (iPTM)", "col": "boltz_iptm", "higher": True,

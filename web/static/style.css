@@ -1,43 +1,162 @@
-/* BinderFlow dark theme overrides */
+/* ProteaFlow Design System — Dark Theme */
 
-/* AG Grid dark theme fixes */
+/* ── 1. Softer borders (Linear-inspired) ──────────────────────── */
+/* Override Tailwind border-slate-700 with semi-transparent white */
+.border-slate-700 {
+    border-color: rgba(255, 255, 255, 0.08) !important;
+}
+.border-slate-600 {
+    border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.border-b.border-slate-700 {
+    border-bottom-color: rgba(255, 255, 255, 0.08) !important;
+}
+.border-slate-800 {
+    border-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+/* ── 2. Hover transitions (all interactive elements) ──────────── */
+a, button, [role="button"], select, input,
+.tab-btn, .hover\:bg-slate-600, .hover\:bg-slate-700,
+.hover\:bg-blue-500, .hover\:text-white {
+    transition: background-color 150ms ease, color 150ms ease,
+                border-color 150ms ease, opacity 150ms ease;
+}
+
+/* ── 3. Refined scrollbar ─────────────────────────────────────── */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+/* Firefox */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* ── 4. Loading skeleton ──────────────────────────────────────── */
+.skeleton-row {
+    height: 32px;
+    background: linear-gradient(90deg,
+        #0f172a 25%, #1e293b 50%, #0f172a 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+    border-radius: 4px;
+    margin-bottom: 2px;
+}
+@keyframes skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* ── AG Grid dark theme ───────────────────────────────────────── */
 .ag-theme-alpine-dark {
     --ag-background-color: #0f172a;
     --ag-header-background-color: #1e293b;
     --ag-odd-row-background-color: #0f172a;
-    --ag-row-hover-color: #1e293b;
-    --ag-border-color: #334155;
+    --ag-row-hover-color: rgba(255, 255, 255, 0.03);
+    --ag-border-color: rgba(255, 255, 255, 0.08);
     --ag-header-foreground-color: #94a3b8;
     --ag-foreground-color: #e2e8f0;
     --ag-font-size: 13px;
     --ag-row-height: 32px;
     --ag-header-height: 36px;
+    --ag-selected-row-background-color: rgba(59, 130, 246, 0.1);
 }
 
-/* Scrollbar */
-::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+/* ── 7. Score gradient cells in AG Grid ───────────────────────── */
+.cell-good { color: #10b981; }
+.cell-medium { color: #f59e0b; }
+.cell-bad { color: #ef4444; }
+
+/* ── 8. Toast notifications ───────────────────────────────────── */
+#toast-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
 }
-::-webkit-scrollbar-track {
-    background: #0f172a;
+.toast {
+    pointer-events: auto;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(12px);
+    animation: toast-in 300ms ease-out, toast-out 300ms ease-in 4700ms forwards;
+    max-width: 360px;
 }
-::-webkit-scrollbar-thumb {
-    background: #334155;
-    border-radius: 4px;
+.toast-success {
+    background: rgba(16, 185, 129, 0.15);
+    border-color: rgba(16, 185, 129, 0.3);
 }
-::-webkit-scrollbar-thumb:hover {
-    background: #475569;
+.toast-error {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+}
+.toast-info {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+}
+@keyframes toast-in {
+    from { opacity: 0; transform: translateY(16px) scale(0.95); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toast-out {
+    from { opacity: 1; transform: translateY(0) scale(1); }
+    to { opacity: 0; transform: translateY(-8px) scale(0.95); }
 }
 
-/* Log terminal */
+/* ── 3. Better focus states ───────────────────────────────────── */
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #0f172a, 0 0 0 4px rgba(59, 130, 246, 0.4);
+}
+button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #0f172a, 0 0 0 4px rgba(59, 130, 246, 0.4);
+}
+
+/* ── Log terminal ─────────────────────────────────────────────── */
 #log-output {
     line-height: 1.5;
     font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 
-/* Drop zone */
+/* ── Drop zone ────────────────────────────────────────────────── */
 #drop-zone.dragover {
     border-color: #3b82f6;
     background: rgba(59, 130, 246, 0.05);
+}
+
+/* ── Micro-interactions ───────────────────────────────────────── */
+.score-card {
+    transition: transform 150ms ease, box-shadow 150ms ease;
+}
+.score-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Tab active animation ─────────────────────────────────────── */
+.tab-btn {
+    transition: color 150ms ease, border-color 150ms ease;
+}
+.tab-btn.active {
+    position: relative;
 }
