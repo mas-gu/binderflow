@@ -149,6 +149,21 @@ def build_mol_rerank_cmd(params: dict) -> list[str]:
             cmd += [f"--{flag}", str(val)]
     if params.get("mw_range") and str(params["mw_range"]).strip():
         cmd += ["--mw_range", str(params["mw_range"])]
+    # Boltz-2 affinity rescoring
+    if params.get("boltz_affinity"):
+        cmd += ["--boltz_affinity"]
+        if params.get("boltz_affinity_top") is not None:
+            cmd += ["--boltz_affinity_top", str(params["boltz_affinity_top"])]
+        if params.get("boltz_affinity_weight") is not None:
+            cmd += ["--boltz_affinity_weight", str(params["boltz_affinity_weight"])]
+        if params.get("boltz_affinity_sort"):
+            cmd += ["--boltz_affinity_sort"]
+        if params.get("boltz_affinity_mw_correction"):
+            cmd += ["--boltz_affinity_mw_correction"]
+        if params.get("boltz_affinity_sampling_steps") is not None:
+            cmd += ["--boltz_affinity_sampling_steps", str(params["boltz_affinity_sampling_steps"])]
+        if params.get("boltz_affinity_diffusion_samples") is not None:
+            cmd += ["--boltz_affinity_diffusion_samples", str(params["boltz_affinity_diffusion_samples"])]
     return cmd
 
 

@@ -8,9 +8,12 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .config import STATIC_DIR, UPLOADS_DIR
+from .config import STATIC_DIR, UPLOADS_DIR, SCRATCH_UPLOADS_DIR
 from . import database
-from .routes import pages, api_gpus, api_jobs, api_results, api_stream, api_manager, api_geometry
+from .routes import (
+    pages, api_gpus, api_jobs, api_results, api_stream,
+    api_manager, api_geometry, api_preview,
+)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -68,9 +71,33 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _cleanup_orphaned_scratch():
+    """Remove scratch upload dirs older than 24 h.
+
+    Token dirs that didn't end up tied to a submitted job persist as
+    leftover bytes; sweep them on startup. Live submissions promote
+    their staged file into UPLOADS_DIR and remove the scratch dir
+    immediately, so anything still here is orphaned.
+    """
+    import shutil
+    import time
+    cutoff = time.time() - 24 * 3600
+    if not SCRATCH_UPLOADS_DIR.exists():
+        return
+    for entry in SCRATCH_UPLOADS_DIR.iterdir():
+        if entry.is_dir():
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    SCRATCH_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    _cleanup_orphaned_scratch()
     await database.init_db()
     await _cleanup_stale_jobs()
     yield
@@ -88,3 +115,4 @@ app.include_router(api_results.router)
 app.include_router(api_stream.router)
 app.include_router(api_manager.router)
 app.include_router(api_geometry.router)
+app.include_router(api_preview.router)

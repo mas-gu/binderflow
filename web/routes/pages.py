@@ -174,6 +174,48 @@ async def monitor(request: Request, job_id: str):
     })
 
 
+def _resolve_target_for_rerank(job: dict) -> str:
+    """Return a cross-machine-readable target PDB/CIF path for a parent job.
+
+    Resolution order (first hit wins):
+      1. Target copy inside the run's out_dir
+         ({out_dir}/top_molecules/target_*.pdb, top_designs/target_*.pdb,
+          {out_dir}/*_clean.pdb|.cif).
+      2. The DB's `target_file` if it still exists on disk.
+      3. DB path with legacy-path rewrites:
+           binderflow_data/uploads  ->  proteaflow_data/uploads
+         (covers the ProteaFlow rename of spring 2026).
+      4. Give up — return the DB value even if missing; UI will warn.
+    """
+    out_dir = job.get("out_dir")
+    if out_dir:
+        out = Path(out_dir)
+        candidates = []
+        for sub in ("top_molecules", "top_designs"):
+            d = out / sub
+            if d.is_dir():
+                candidates += sorted(d.glob("target_*.pdb"))
+                candidates += sorted(d.glob("target_*.cif"))
+        candidates += sorted(out.glob("*_clean.pdb"))
+        candidates += sorted(out.glob("*_clean.cif"))
+        for c in candidates:
+            if c.exists():
+                return str(c)
+
+    tf = (job.get("target_file") or "").strip()
+    if tf and Path(tf).exists():
+        return tf
+
+    # Legacy-path rewrite: ProteaFlow rename moved uploads.
+    if tf and "binderflow_data/uploads" in tf:
+        rewritten = tf.replace("binderflow_data/uploads",
+                               "proteaflow_data/uploads")
+        if Path(rewritten).exists():
+            return rewritten
+
+    return tf
+
+
 @router.get("/rerank")
 async def rerank_page(request: Request, results_dir: str = "", type: str = ""):
     gpus = query_gpus()
@@ -181,6 +223,10 @@ async def rerank_page(request: Request, results_dir: str = "", type: str = ""):
     all_completed = await database.list_all_jobs(status="completed")
     completed_jobs = [j for j in all_completed
                       if j.get("job_type") in ("generate", "molecule")]
+    # Resolve each completed job's target to a path that lives inside its
+    # out_dir on Colossus (cross-machine readable) when possible.
+    for j in completed_jobs:
+        j["target_file"] = _resolve_target_for_rerank(j) or j.get("target_file", "")
     for gpu in gpus:
         for j in running:
             if j["gpu_id"] == gpu.index:
@@ -226,15 +272,24 @@ def _results_molecule(request: Request, job: dict):
         "Pocket Fit vs QED": ("pocket_fit", "qed"),
         "LE vs QED": ("ligand_efficiency", "qed"),
         "Fsp3 vs QED": ("fsp3", "qed"),
+        "Boltz prob_binder vs Vina": ("boltz_affinity_prob_binder", "vina_score"),
+        "Boltz prob_binder vs QED": ("boltz_affinity_prob_binder", "qed"),
+        "Boltz log IC50 vs Vina": ("boltz_affinity_log_ic50", "vina_score"),
     }
-    mol_higher_better = ["combined_score", "qed"]
-    mol_lower_better = ["sa_score", "vina_score", "lipinski_violations"]
+    mol_higher_better = ["combined_score", "qed", "boltz_affinity_prob_binder"]
+    mol_lower_better = ["sa_score", "vina_score", "lipinski_violations",
+                        "boltz_affinity_log_ic50"]
     mol_default_columns = [
         "rank", "design_id", "tool", "smiles", "combined_score",
-        "qed", "sa_score", "vina_score", "mw", "logp",
-        "hbd", "hba", "tpsa", "lipinski_violations",
+        "qed", "sa_score", "vina_score",
+        "boltz_affinity_prob_binder", "boltz_affinity_log_ic50",
+        "mw", "logp", "hbd", "hba", "tpsa", "lipinski_violations",
     ]
-    mol_tool_metrics = ["combined_score", "qed", "sa_score", "vina_score", "mw", "logp", "tpsa"]
+    mol_tool_metrics = [
+        "combined_score", "qed", "sa_score", "vina_score",
+        "boltz_affinity_prob_binder", "boltz_affinity_log_ic50",
+        "mw", "logp", "tpsa",
+    ]
 
     return _render(request, "results_mol.html", {
         "job": job,

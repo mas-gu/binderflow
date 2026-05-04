@@ -1,17 +1,6 @@
-# ProteaFlow
-*formerly BinderFlow*
+# proteaflow
 
 **Author:** Guillaume Mas
-
-A unified pipeline for de novo protein binder and small molecule design using 10 generative tools (including compounds libraries). Automated validation, scoring, and ranking pipeline. Intuitive web interface for job submission, live monitoring and interactive result exploration — no coding required.
-
-#### Protein Binder Design Pipeline
-![Pipeline Overview](docs/design/pipeline_overview.png)
-
-#### Small Molecule Design Pipeline
-![Molecule Pipeline Overview](docs/design/pipeline_overview_molecules.png)
-
-## Binders Design
 
 A unified pipeline for de novo protein binder design using seven complementary generative tools, with automated validation, geometric site filtering, and interface analysis.
 
@@ -64,6 +53,15 @@ ProteaFlow can be used via the **command line** or the **web interface**. Both r
 | Scatter — 13 presets, colored by tool | Radar — 8-axis developability profile |
 | ![Tools](docs/screenshots/web_tools.png) | ![Detail](docs/screenshots/web_detail.png) |
 | Tool comparison — box plots, histograms | Design detail — scores, sequence, 3D viewer |
+
+### Screenshots — Command Line
+
+| | |
+|---|---|
+| ![CLI Run](docs/screenshots/cli_run.png) | ![CLI Dashboard](docs/screenshots/cli_dashboard.png) |
+| Pipeline terminal output | Dashboard plot (auto-generated) |
+| ![PyMOL](docs/screenshots/cli_pymol.png) | ![Desktop Browser](docs/screenshots/cli_browser.png) |
+| PyMOL visualization (view_by_chain.pml) | Desktop browser (PyQt6) |
 
 ### Quick Start — Web Interface
 
@@ -516,14 +514,12 @@ Structure-based drug design (SBDD) pipeline for de novo molecule generation and 
 
 | | |
 |---|---|
-| ![Mol Launch](docs/screenshots/mol_launch.png) | ![Mol Rankings](docs/screenshots/mol_rankings.png) |
-| Launch — target upload, site definition, tool selection | Rankings — unified table with all tools + library screening |
-| ![Mol Scatter](docs/screenshots/mol_scatter.png) | ![Mol 3D](docs/screenshots/mol_3d_viewer.png) |
-| Scatter — score distribution by tool | 3D viewer — pocket + molecule + contacts |
-| ![Mol Dashboard](docs/screenshots/mol_dashboard.png) | ![Mol Dashboard Gen](docs/screenshots/mol_dashboard_gen.png) |
-| Dashboard — score distributions, QED vs Vina | Generation dashboard — design progress |
-| ![Mol Radar](docs/screenshots/mol_radar.png) | ![Mol Radar Gen](docs/screenshots/mol_radar_gen.png) |
-| Radar — multi-axis profile (QED, SA, Vina, diversity) | Generation radar — tool comparison |
+| ![Mol Rankings](docs/screenshots/mol_rankings.png) | ![Mol Scatter](docs/screenshots/mol_scatter.png) |
+| Rankings — unified table with all tools + library | Scatter — score distribution by tool |
+| ![Mol Detail](docs/screenshots/mol_detail.png) | ![Mol 3D](docs/screenshots/mol_3d_viewer.png) |
+| Design detail — physicochemical + medicinal chemistry properties | 3D viewer — pocket + molecule + contacts |
+| ![Mol Dashboard](docs/screenshots/mol_dashboard.png) | ![Mol Tools](docs/screenshots/mol_tools.png) |
+| Dashboard — score distributions, QED vs Vina | Tool comparison — per-tool statistics |
 
 ### Quick Start — Small Molecule Design
 

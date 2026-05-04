@@ -235,6 +235,66 @@
             </div>
         </div>
 
+        <!-- Boltz-2 Affinity Rescoring (GPU) -->
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6 mt-6">
+            <h2 class="text-lg font-semibold mb-1 text-slate-200">Boltz-2 Affinity Rescoring
+                <span class="text-xs text-amber-400 ml-2">GPU</span>
+            </h2>
+            <p class="text-xs text-slate-500 mb-4">Re-score top-N molecules with Boltz-2's learned affinity model.
+                Adds <code class="text-slate-300">boltz_affinity_log_ic50</code> (analog ranking) and
+                <code class="text-slate-300">boltz_affinity_prob_binder</code> (hit triage, 0-1). ~10-15 s/molecule on GPU;
+                target MSA cached.</p>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                <label class="flex items-center gap-2 cursor-pointer md:col-span-2">
+                    <input type="checkbox" name="boltz_affinity" id="boltz_affinity_cb" class="border-slate-600">
+                    <span class="text-sm">Enable Boltz-2 affinity rescoring</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="boltz_affinity_sort" id="boltz_affinity_sort_cb" class="border-slate-600" disabled>
+                    <span class="text-sm">Sort by prob_binder</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="boltz_affinity_mw_correction" id="boltz_affinity_mw_cb" class="border-slate-600" disabled>
+                    <span class="text-sm">MW correction</span>
+                </label>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="boltz_affinity_params">
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Top-N to rescore</label>
+                    <input type="number" name="boltz_affinity_top" id="boltz_affinity_top" value="100" min="5" max="1000" step="5" disabled
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Weight in combined_score</label>
+                    <input type="number" name="boltz_affinity_weight" id="boltz_affinity_weight" value="0.0" step="0.05" min="0" max="1" disabled
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Sampling steps</label>
+                    <input type="number" name="boltz_affinity_sampling_steps" id="boltz_affinity_sampling_steps" value="200" min="10" max="500" step="10" disabled
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">Diffusion samples</label>
+                    <input type="number" name="boltz_affinity_diffusion_samples" id="boltz_affinity_diffusion_samples" value="5" min="1" max="10" step="1" disabled
+                           class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                </div>
+                <div class="md:col-span-2" id="boltz_affinity_gpu_div">
+                    <label class="block text-xs text-slate-500 mb-1">GPU</label>
+                    <select name="boltz_affinity_gpu_id" id="boltz_affinity_gpu_id" disabled
+                            class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        {% for gpu in gpus %}
+                        <option value="{{ gpu.index }}">
+                            GPU {{ gpu.index }}: {{ gpu.name }}
+                            ({{ gpu.memory_used_mb }}/{{ gpu.memory_total_mb }} MB){% if gpu.busy %} — BUSY{% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <p class="text-xs text-slate-600 mt-2">Default weight 0.0 adds columns only (no re-ranking). Recommended 0.2-0.3 to blend into combined score. MSA is computed once and cached under <code class="text-slate-400">{out_dir}/affinity/target_msa.csv</code>.</p>
+        </div>
+
         <div class="bg-slate-900 border border-slate-700 rounded-lg p-6 mt-6">
             <h2 class="text-lg font-semibold mb-4 text-slate-200">Hard Filters</h2>
             <p class="text-xs text-slate-500 mb-3">Leave blank to skip. Molecules failing any filter are excluded.</p>
@@ -341,10 +401,18 @@
             if (firstCb) {
                 const label = firstCb.closest('.job-item');
                 if (label) {
-                    document.getElementById('target_path_input').value = label.dataset.target || '';
+                    const tgt = label.dataset.target || '';
+                    document.getElementById('target_path_input').value = tgt;
                     document.getElementById('site_input').value = label.dataset.site || '';
                     if (!document.getElementById('project_input').value)
                         document.getElementById('project_input').value = label.dataset.project || '';
+                    // Drop any stale file-upload selection so the auto-filled path wins.
+                    const fi = document.getElementById('file-input');
+                    if (fi) fi.value = '';
+                    const dt = document.getElementById('drop-text');
+                    if (dt) dt.textContent = tgt
+                        ? 'Using: ' + tgt.split('/').slice(-2).join('/')
+                        : 'Drop PDB/CIF here or click to browse';
                 }
                 // Auto-detect binder vs molecule from first selection
                 const jtype = firstCb.closest('.job-item')?.dataset.type || 'generate';
@@ -409,15 +477,37 @@
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500'));
     dropZone.addEventListener('drop', e => {
         e.preventDefault(); dropZone.classList.remove('border-blue-500');
-        if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; dropText.textContent = e.dataTransfer.files[0].name; }
+        if (e.dataTransfer.files.length) {
+            fileInput.files = e.dataTransfer.files;
+            dropText.textContent = e.dataTransfer.files[0].name;
+            // Clear any auto-filled path so the upload wins on submit.
+            document.getElementById('target_path_input').value = '';
+        }
     });
-    fileInput.addEventListener('change', () => { if (fileInput.files.length) dropText.textContent = fileInput.files[0].name; });
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) {
+            dropText.textContent = fileInput.files[0].name;
+            document.getElementById('target_path_input').value = '';
+        }
+    });
 
     // ── Reprediction toggle ──────────────────────────────────────
     document.getElementById('reprediction_cb')?.addEventListener('change', (e) => {
         document.getElementById('gpu-select-div').classList.toggle('hidden', !e.target.checked);
         document.getElementById('plddt-threshold-div').classList.toggle('hidden', !e.target.checked);
         document.getElementById('tag-inputs-div').classList.toggle('hidden', !e.target.checked);
+    });
+
+    // ── Boltz-2 affinity toggle ─────────────────────────────────
+    document.getElementById('boltz_affinity_cb')?.addEventListener('change', (e) => {
+        const enabled = e.target.checked;
+        ['boltz_affinity_sort_cb', 'boltz_affinity_mw_cb', 'boltz_affinity_top',
+         'boltz_affinity_weight', 'boltz_affinity_sampling_steps',
+         'boltz_affinity_diffusion_samples', 'boltz_affinity_gpu_id']
+         .forEach(id => {
+             const el = document.getElementById(id);
+             if (el) el.disabled = !enabled;
+         });
     });
 
     // ── Form submit ──────────────────────────────────────────────
@@ -436,6 +526,16 @@
         formData.append('site', form.site.value);
         formData.append('results_dir', resultsDir);
 
+        // Attach the uploaded PDB/CIF (drag-drop or browse). The API prefers
+        // the uploaded file over target_path when both are present.
+        const fInput = document.getElementById('file-input');
+        if (fInput?.files?.length) {
+            formData.append('target', fInput.files[0]);
+        } else if (!form.target_path.value?.trim()) {
+            alert('Please upload a target PDB/CIF or paste a server path.');
+            return;
+        }
+
         if (jobType === 'mol_rerank') {
             // Molecule rerank
             const outDir = resultsDir.split(',')[0].trim() + '/reranked_' + suffix;
@@ -443,7 +543,22 @@
             formData.append('score_weights', form.mol_score_weights.value);
             formData.append('pocket_dist', form.pocket_dist.value);
             formData.append('top_n', form.mol_top_n.value || '50');
-            formData.append('gpu_id', '0');
+            // Boltz-2 affinity rescoring (optional GPU)
+            const affinity = document.getElementById('boltz_affinity_cb')?.checked || false;
+            formData.append('boltz_affinity', affinity);
+            formData.append('gpu_id', affinity ? (form.boltz_affinity_gpu_id?.value || '0') : '0');
+            if (affinity) {
+                formData.append('boltz_affinity_top', form.boltz_affinity_top?.value || '100');
+                formData.append('boltz_affinity_weight', form.boltz_affinity_weight?.value || '0');
+                formData.append('boltz_affinity_sort',
+                    document.getElementById('boltz_affinity_sort_cb')?.checked || false);
+                formData.append('boltz_affinity_mw_correction',
+                    document.getElementById('boltz_affinity_mw_cb')?.checked || false);
+                formData.append('boltz_affinity_sampling_steps',
+                    form.boltz_affinity_sampling_steps?.value || '200');
+                formData.append('boltz_affinity_diffusion_samples',
+                    form.boltz_affinity_diffusion_samples?.value || '5');
+            }
             formData.append('reprediction', '');
             formData.append('length', '');
             formData.append('tools', '');

@@ -103,6 +103,7 @@ from generate_binders import (
     validate_boltz_monomer, validate_boltz, rosetta_score_interfaces, compute_refolding_rmsd,
     compute_solubility,
     geometric_site_filter, populate_binder_composition, populate_interface_composition, populate_binder_ss,
+    sanitize_target_pdb,
     # Ranking + output
     compute_combined_score, rank_designs,
     write_rankings_csv, copy_top_designs, plot_dashboard,
@@ -992,6 +993,11 @@ def main():
 
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_target_path = target_path
+    clean_target = out_dir / f"{target_path.stem}_clean.pdb"
+    sanitize_target_pdb(target_path, clean_target)
+    target_path = clean_target
 
     val_dir = out_dir / "validation"
 

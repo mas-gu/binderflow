@@ -2,15 +2,24 @@
 
 import json
 import re
+import shutil
+import sys
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, Form, UploadFile, File, HTTPException, Request
 
 from .. import database
-from ..config import UPLOADS_DIR, OUTPUTS_BASE, MOLECULE_OUTPUTS_BASE, MOLECULE_TOOLS
+from ..config import (
+    UPLOADS_DIR, SCRATCH_UPLOADS_DIR, OUTPUTS_BASE,
+    MOLECULE_OUTPUTS_BASE, MOLECULE_TOOLS,
+)
 from ..gpu import query_gpus, invalidate_cache
 from .. import job_runner
+
+# Make pocket_utils importable for site validation
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from pocket_utils import parse_site_multichain, site_pairs_chains  # noqa: E402
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 
@@ -27,6 +36,7 @@ async def create_job(
     project: str = Form(""),
     target: UploadFile = File(None),
     target_path: str = Form(""),
+    target_token: str = Form(""),
     site: str = Form(...),
     length: str = Form("60-80"),
     tools: str = Form("rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa"),
@@ -57,12 +67,23 @@ async def create_job(
     no_vina: str = Form(""),
     pocket_dist: str = Form("8.0"),
     max_atoms: str = Form("35"),
+    # Boltz-2 affinity rescoring (mol_rerank only)
+    boltz_affinity: bool = Form(False),
+    boltz_affinity_top: int = Form(100),
+    boltz_affinity_weight: float = Form(0.0),
+    boltz_affinity_sort: bool = Form(False),
+    boltz_affinity_mw_correction: bool = Form(False),
+    boltz_affinity_sampling_steps: int = Form(200),
+    boltz_affinity_diffusion_samples: int = Form(5),
 ):
     username = request.cookies.get("proteaflow_user", "")
     project = project.strip() or "unassigned"
     # Validate GPU — skip for rank_only reranks (no GPU needed)
     # GPU busy check is informational only — don't block job creation
-    is_rerank_no_gpu = (job_type == "rerank" and not reprediction) or job_type == "mol_rerank"
+    is_rerank_no_gpu = (
+        (job_type == "rerank" and not reprediction)
+        or (job_type == "mol_rerank" and not boltz_affinity)
+    )
     if not is_rerank_no_gpu:
         gpus = query_gpus()
         gpu = next((g for g in gpus if g.index == gpu_id), None)
@@ -72,10 +93,37 @@ async def create_job(
     safe_name = _sanitize_name(job_name)
     date_str = time.strftime("%Y-%m-%d")
 
-    # Handle target file
-    if target and target.filename:
-        # Upload file
-        upload_dir = UPLOADS_DIR / safe_name
+    # Handle target file. Three sources, in priority order:
+    #   1. target_token  — file already staged via /api/preview/stage-target
+    #                      (after the user previewed the pocket); promote it
+    #                      into the permanent uploads dir and wipe scratch.
+    #   2. target file   — multipart upload alongside the form submit.
+    #   3. target_path   — server-side path supplied by the user.
+    upload_dir = UPLOADS_DIR / safe_name
+    if target_token:
+        # Reject obvious traversal attempts before touching the filesystem.
+        if "/" in target_token or "\\" in target_token or ".." in target_token:
+            raise HTTPException(400, "Invalid target_token")
+        scratch = SCRATCH_UPLOADS_DIR / target_token
+        if not scratch.is_dir():
+            raise HTTPException(400, "Staged target not found (token expired?)")
+        staged = [p for p in scratch.iterdir()
+                  if p.is_file() and p.suffix.lower() in (".pdb", ".cif")]
+        if not staged:
+            raise HTTPException(400, "No staged target file in scratch dir")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        src = staged[0]
+        dest = upload_dir / src.name
+        # Symlinks (when the staging step linked an on-disk path) get
+        # resolved to the real file; uploaded blobs get copied/moved.
+        if src.is_symlink():
+            target_file = str(src.resolve())
+        else:
+            shutil.move(str(src), str(dest))
+            target_file = str(dest)
+        # Wipe the scratch dir — token is single-use.
+        shutil.rmtree(scratch, ignore_errors=True)
+    elif target and target.filename:
         upload_dir.mkdir(parents=True, exist_ok=True)
         target_file = str(upload_dir / target.filename)
         content = await target.read()
@@ -87,6 +135,32 @@ async def create_job(
             raise HTTPException(400, f"Target file not found: {target_file}")
     else:
         raise HTTPException(400, "No target file provided")
+
+    # Validate site syntax up front. Molecule jobs use the multi-chain
+    # parser; binder jobs go through the existing single-chain parser
+    # later in the pipeline (parse_site rejects multi-chain itself).
+    if job_type in ("molecule", "mol_rerank"):
+        try:
+            site_pairs = parse_site_multichain(site)
+        except ValueError as e:
+            raise HTTPException(400, f"Invalid site spec: {e}")
+        # Best-effort chain-existence check — surface a clear error before
+        # the GPU is acquired. Fall back gracefully if gemmi isn't installed.
+        try:
+            import gemmi
+            st = gemmi.read_structure(target_file)
+            chains_in_target = {ch.name for ch in st[0]} if len(st) else set()
+            missing = [c for c in site_pairs_chains(site_pairs)
+                       if c not in chains_in_target]
+            if missing:
+                raise HTTPException(
+                    400,
+                    f"Chain(s) {missing} not found in target "
+                    f"(available: {sorted(chains_in_target)})")
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # gemmi unavailable / unreadable: defer to runtime
 
     # Output directory — use override for reranks into subfolder
     if not project or not project.strip():
@@ -151,6 +225,14 @@ async def create_job(
     elif job_type == "mol_rerank":
         params["pocket_dist"] = pocket_dist
         params["score_weights"] = score_weights
+        params["boltz_affinity"] = boltz_affinity
+        if boltz_affinity:
+            params["boltz_affinity_top"] = boltz_affinity_top
+            params["boltz_affinity_weight"] = boltz_affinity_weight
+            params["boltz_affinity_sort"] = boltz_affinity_sort
+            params["boltz_affinity_mw_correction"] = boltz_affinity_mw_correction
+            params["boltz_affinity_sampling_steps"] = boltz_affinity_sampling_steps
+            params["boltz_affinity_diffusion_samples"] = boltz_affinity_diffusion_samples
 
     job_id = await database.create_job(
         name=job_name,

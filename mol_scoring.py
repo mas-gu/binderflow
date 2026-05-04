@@ -401,25 +401,32 @@ def rank_molecules(all_mols, weights=(0.40, 0.35, 0.15, 0.10),
     """
     Rank molecules by combined score.
 
-    combined_score = w_vina * vina_norm + w_qed * qed + w_sa * sa_norm + w_fit * fit_norm
+    4-weight form (default):
+        combined_score = w_vina * vina_norm + w_qed * qed
+                       + w_sa * sa_norm + w_fit * fit_norm
+
+    5-weight form (enables Boltz-2 affinity term):
+        combined_score = w_vina * vina_norm + w_qed * qed
+                       + w_sa * sa_norm + w_fit * fit_norm
+                       + w_aff * prob_binder
 
     Where:
-        vina_norm = clip(-vina / 12, 0, 1)          — raw Vina, no size bias
-        qed       = drug-likeness (0-1)
-        sa_norm   = 1 - (sa_score - 1) / 9          — synthetic accessibility
-        fit_norm  = clip((pocket_fit - 0.5) / 0.5, 0, 1)  — rescaled pocket fit
+        vina_norm    = clip(-vina / 12, 0, 1)          — raw Vina, no size bias
+        qed          = drug-likeness (0-1)
+        sa_norm      = 1 - (sa_score - 1) / 9          — synthetic accessibility
+        fit_norm     = clip((pocket_fit - 0.5) / 0.5, 0, 1)
+        prob_binder  = boltz_affinity_prob_binder (0-1); NaN -> 0 contribution
 
     Hard pre-filters:
         Vina outside [-12, -1] → NaN (artifact)
-        pocket_fit < 0.5 → excluded from ranking
 
     Parameters
     ----------
     all_mols : list[dict]
-        Each dict must have at least 'qed', 'sa_score'. 'vina_score' optional.
-    weights : tuple of 4 floats
-        (vina_weight, qed_weight, sa_weight, pocket_fit_weight).
-        Default (0.40, 0.35, 0.15, 0.10).
+        Each dict must have at least 'qed', 'sa_score'. 'vina_score',
+        'pocket_fit', and 'boltz_affinity_prob_binder' are optional.
+    weights : tuple of 4 or 5 floats
+        (vina, qed, sa, fit) or (vina, qed, sa, fit, affinity).
     pocket_pdb : str or None
         Path to pocket PDB for pocket_fit computation.
 
@@ -429,7 +436,14 @@ def rank_molecules(all_mols, weights=(0.40, 0.35, 0.15, 0.10),
         Input dicts with added 'combined_score', 'ligand_efficiency',
         'pocket_fit', and 'rank' fields, sorted by rank.
     """
-    w_vina, w_qed, w_sa, w_fit = weights
+    if len(weights) == 4:
+        w_vina, w_qed, w_sa, w_fit = weights
+        w_aff = 0.0
+    elif len(weights) == 5:
+        w_vina, w_qed, w_sa, w_fit, w_aff = weights
+    else:
+        raise ValueError(
+            f"rank_molecules weights must have 4 or 5 elements, got {len(weights)}")
 
     for entry in all_mols:
         vina = entry.get("vina_score", float("nan"))
@@ -473,11 +487,20 @@ def rank_molecules(all_mols, weights=(0.40, 0.35, 0.15, 0.10),
         else:
             fit_norm = 0.0
 
+        # Boltz-2 affinity probability (0-1). NaN -> 0 contribution
+        # (same pass-through convention as vina/fit).
+        prob = entry.get("boltz_affinity_prob_binder", float("nan"))
+        if isinstance(prob, (int, float)) and prob == prob:
+            prob_norm = max(0.0, min(1.0, float(prob)))
+        else:
+            prob_norm = 0.0
+
         entry["combined_score"] = (
             w_vina * vina_norm +
             w_qed * qed_val +
             w_sa * sa_norm +
-            w_fit * fit_norm
+            w_fit * fit_norm +
+            w_aff * prob_norm
         )
 
     # Sort by combined score descending
@@ -498,6 +521,7 @@ def write_rankings_csv(molecules, out_path):
     fieldnames = [
         "rank", "design_id", "tool", "smiles", "sdf_path",
         "qed", "sa_score", "vina_score",
+        "boltz_affinity_log_ic50", "boltz_affinity_prob_binder",
         "mw", "logp", "hbd", "hba", "tpsa", "lipinski_violations",
         "combined_score",
     ]

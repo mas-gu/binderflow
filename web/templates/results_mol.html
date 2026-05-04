@@ -399,7 +399,9 @@ function initGrid() {
     const columnDefs = allCols
         .filter(c => DEFAULT_COLUMNS.includes(c))
         .map(c => ({
-            field: c, headerName: c, sortable: true, filter: true, resizable: true,
+            field: c,
+            headerName: c === 'boltz_affinity_log_ic50' ? 'boltz_affinity_IC50' : c,
+            sortable: true, filter: true, resizable: true,
             width: c === 'smiles' ? 250 : c === 'design_id' ? 180 : 110,
             hide: c === 'smiles',
             cellStyle: params => {
@@ -408,12 +410,18 @@ function initGrid() {
             },
             valueFormatter: params => {
                 if (params.value == null) return '';
+                // Human-readable IC50 (sort still uses the raw log value).
+                if (c === 'boltz_affinity_log_ic50' &&
+                    typeof params.value === 'number')
+                    return formatBoltzIC50(params.value);
                 if (typeof params.value === 'number' && params.value.toFixed) return params.value.toFixed(3);
                 return params.value;
             },
         }));
 
     const gridDiv = document.getElementById('rankings-grid');
+    // Remove the loading skeleton so AG Grid doesn't paint on top of it.
+    gridDiv.innerHTML = '';
     gridApi = agGrid.createGrid(gridDiv, {
         columnDefs, rowData: filteredData,
         defaultColDef: { sortable: true, filter: true, resizable: true },
@@ -543,7 +551,7 @@ function initToolControls() {
 // ============================================================
 // Radar Chart (Molecule Developability Profile)
 // ============================================================
-const RADAR_AXES = [
+const RADAR_AXES_BASE = [
     { key: 'vina_score', label: 'Binding', norm: v => v == null ? 0 : Math.max(0, Math.min(1, -v / 12)), higher: true },
     { key: 'qed', label: 'Drug-likeness', norm: v => v ?? 0, higher: true },
     { key: 'sa_score', label: 'Synthesizability', norm: v => v == null ? 0 : Math.max(0, 1 - (v - 1) / 9), higher: true },
@@ -551,6 +559,12 @@ const RADAR_AXES = [
     { key: 'ligand_efficiency', label: 'Lig. Efficiency', norm: v => v == null ? 0 : Math.max(0, Math.min(1, v / 0.5)), higher: true },
     { key: 'fsp3', label: 'Fsp3', norm: v => v ?? 0, higher: true },
 ];
+// Show Boltz-2 affinity axis only if at least one row has prob_binder populated.
+const RADAR_AXIS_AFFINITY = {
+    key: 'boltz_affinity_prob_binder', label: 'Boltz Affinity',
+    norm: v => v == null ? 0 : Math.max(0, Math.min(1, v)), higher: true,
+};
+let RADAR_AXES = RADAR_AXES_BASE.slice();
 
 function updateRadar() {
     const sel = document.getElementById('radar-select');
@@ -643,13 +657,40 @@ function initRadarControls() {
 // ============================================================
 // Design Detail
 // ============================================================
+// Unit-aware formatter for log10(IC50 / uM).
+//   log  -3 -> 1 nM     log  0 -> 1 uM     log  3 -> 1 mM
+// Returns a plain string like "38 uM", "300 nM", ">100 uM"; caller may
+// optionally pair with the raw log for sortable precision.
+function formatBoltzIC50(logVal) {
+    if (logVal == null || Number.isNaN(logVal)) return '--';
+    const ic50_uM = Math.pow(10, logVal);
+    if (ic50_uM >= 1000) return (ic50_uM / 1000).toFixed(1) + ' mM';
+    if (ic50_uM >= 10)   return ic50_uM.toFixed(0) + ' \u00B5M';
+    if (ic50_uM >= 1)    return ic50_uM.toFixed(1) + ' \u00B5M';
+    if (ic50_uM >= 0.01) return (ic50_uM * 1000).toFixed(0) + ' nM';
+    return (ic50_uM * 1e6).toFixed(0) + ' pM';
+}
+
 // Score highlight cards (top row)
-const SCORE_CARD_DEFS = [
+const SCORE_CARD_DEFS_BASE = [
     { key: 'combined_score', label: 'Combined Score', fmt: v => v?.toFixed(3) ?? '--', color: 'text-blue-400' },
     { key: 'qed', label: 'QED', fmt: v => v?.toFixed(3) ?? '--', color: 'text-emerald-400' },
     { key: 'sa_score', label: 'SA Score', fmt: v => v?.toFixed(2) ?? '--', color: 'text-amber-400' },
     { key: 'vina_score', label: 'Vina Score', fmt: v => v != null ? v.toFixed(2) + ' kcal/mol' : '--', color: 'text-red-400' },
 ];
+// Extra Boltz-2 affinity cards (shown only when rescoring was applied).
+// IC50 card shows the unit-aware value prominently with the raw log below.
+const SCORE_CARD_AFFINITY = [
+    { key: 'boltz_affinity_prob_binder', label: 'Boltz prob_binder',
+      fmt: v => v != null ? v.toFixed(3) : '--', color: 'text-fuchsia-400' },
+    { key: 'boltz_affinity_log_ic50', label: 'Boltz IC50',
+      fmt: v => v != null
+        ? formatBoltzIC50(v) +
+          '<span class="block text-[10px] text-slate-500 mt-0.5">log ' + v.toFixed(2) + '</span>'
+        : '--',
+      color: 'text-fuchsia-400' },
+];
+let SCORE_CARD_DEFS = SCORE_CARD_DEFS_BASE.slice();
 
 // Physicochemical properties table (left column)
 const PHYSCHEM_PROPS = [
@@ -674,6 +715,15 @@ const MEDCHEM_PROPS = [
     { key: 'lipinski_violations', label: 'Lipinski violations' },
     { key: 'qed', label: 'Druglikeness (QED)', fmt: v => v != null ? (v * 100).toFixed(1) : '--' },
     { key: 'sa_score', label: 'Synth. complexity', fmt: v => v?.toFixed(1) ?? '--' },
+    { key: 'boltz_affinity_prob_binder', label: 'Boltz prob. binder',
+      fmt: v => v != null ? v.toFixed(3) : '--',
+      colorFn: v => v == null ? 'text-slate-500' : (v >= 0.5 ? 'text-emerald-400' : (v >= 0.25 ? 'text-amber-400' : 'text-red-400')) },
+    { key: 'boltz_affinity_log_ic50', label: 'Boltz IC50',
+      fmt: v => v != null
+        ? formatBoltzIC50(v) +
+          ' <span class="text-[10px] text-slate-500">(log ' + v.toFixed(2) + ')</span>'
+        : '--',
+      colorFn: v => v == null ? 'text-slate-500' : (v <= 0 ? 'text-emerald-400' : (v <= 2 ? 'text-amber-400' : 'text-red-400')) },
 ];
 
 function selectDesign(d) {
@@ -938,6 +988,17 @@ async function loadData() {
             document.getElementById('rankings-grid').innerHTML =
                 '<p class="text-slate-400 p-8">No rankings data available yet.</p>';
             return;
+        }
+        // Detect Boltz-2 affinity presence and extend radar axes + score cards.
+        const hasAffinity = allData.some(r =>
+            r.boltz_affinity_prob_binder != null &&
+            !Number.isNaN(parseFloat(r.boltz_affinity_prob_binder)));
+        if (hasAffinity) {
+            RADAR_AXES = RADAR_AXES_BASE.concat([RADAR_AXIS_AFFINITY]);
+            SCORE_CARD_DEFS = SCORE_CARD_DEFS_BASE.concat(SCORE_CARD_AFFINITY);
+            // Render card grid as 6 columns when affinity is present
+            const cardsDiv = document.getElementById('score-cards');
+            if (cardsDiv) cardsDiv.className = 'grid grid-cols-6 gap-2';
         }
         filteredData = allData.slice();
         initFilterPanel();

@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block title %}ProteaFlow — Launch Job{% endblock %}
 
+{% block head %}
+<!-- 3Dmol.js for the molecule pocket preview viewer -->
+<script src="https://3Dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
+{% endblock %}
+
 {% block content %}
 <h1 class="text-2xl font-bold mb-6" id="page-title">Launch Binder Design</h1>
 
@@ -63,15 +68,19 @@
             </div>
             <div>
                 <label class="block text-sm text-slate-400 mb-1">Or: Target path on server</label>
-                <input type="text" name="target_path"
+                <input type="text" name="target_path" id="target_path"
                        class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
                        placeholder="/path/to/target.pdb">
             </div>
+            <input type="hidden" name="target_token" id="target_token" value="">
             <div>
                 <label class="block text-sm text-slate-400 mb-1">Binding Site</label>
-                <input type="text" name="site" required
+                <input type="text" name="site" id="site_input" required
                        class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm"
                        placeholder="A:373-374,379-384">
+                <p id="site-hint-mol" class="hidden text-xs text-slate-500 mt-1">
+                    Cross-chain pockets supported: <code class="text-blue-400">A:11-17,B:119-124</code>
+                </p>
             </div>
             <div id="length-field">
                 <label class="block text-sm text-slate-400 mb-1">Binder Length</label>
@@ -241,6 +250,52 @@
 
     <!-- ═══ MOLECULE-SPECIFIC SECTIONS ═══ -->
     <div id="molecule-section" class="hidden space-y-6">
+
+        <!-- Pocket Preview ───────────────────────────────────────────── -->
+        <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-slate-200">Pocket Preview</h2>
+                <div class="flex items-center gap-2">
+                    <label class="text-xs text-slate-400">Pocket Dist (Å)</label>
+                    <input type="number" id="preview_pocket_dist" value="8.0"
+                           step="0.5" min="4" max="15"
+                           class="w-20 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs">
+                    <button type="button" id="preview-btn"
+                            class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1 rounded text-sm font-medium transition-colors">
+                        Validate &amp; preview
+                    </button>
+                </div>
+            </div>
+            <div id="preview-status" class="text-xs text-slate-400 mb-3">
+                Pick a target file (or path), enter the binding site, then click
+                <span class="text-slate-300">Validate &amp; preview</span> to confirm
+                the extracted pocket before launch.
+            </div>
+            <div id="preview-error" class="hidden bg-red-900/40 border border-red-700 rounded px-3 py-2 text-sm text-red-300 mb-3"></div>
+            <div id="preview-warnings" class="hidden bg-amber-900/30 border border-amber-700 rounded px-3 py-2 text-xs text-amber-200 mb-3"></div>
+
+            <div id="preview-summary" class="hidden grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">Site &amp; Pocket</div>
+                    <table class="w-full text-sm">
+                        <tbody class="divide-y divide-slate-800">
+                            <tr><td class="py-1 text-slate-400">Chains</td><td id="ps-chains" class="text-slate-200"></td></tr>
+                            <tr><td class="py-1 text-slate-400">Anchor residues</td><td id="ps-anchors" class="text-slate-200"></td></tr>
+                            <tr><td class="py-1 text-slate-400">Pocket residues (≤dist)</td><td id="ps-pocket" class="text-slate-200"></td></tr>
+                            <tr><td class="py-1 text-slate-400">Center (Å)</td><td id="ps-center" class="text-slate-200 font-mono text-xs"></td></tr>
+                            <tr><td class="py-1 text-slate-400">Bbox</td><td id="ps-bbox" class="text-slate-200"></td></tr>
+                            <tr><td class="py-1 text-slate-400">PocketXMol radius</td><td id="ps-radius" class="text-slate-200"></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div>
+                    <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">3D pocket (anchors red, neighbours grey)</div>
+                    <div id="preview-viewer" style="height: 320px; position: relative;"
+                         class="bg-slate-950 border border-slate-700 rounded"></div>
+                </div>
+            </div>
+        </div>
+
         <div class="bg-slate-900 border border-slate-700 rounded-lg p-6">
             <h2 class="text-lg font-semibold mb-4 text-slate-200">Molecule Design Settings</h2>
 
@@ -371,6 +426,8 @@
         const molSection = document.getElementById('molecule-section');
         const lengthField = document.getElementById('length-field');
         const title = document.getElementById('page-title');
+        const siteInput = document.getElementById('site_input');
+        const siteHint = document.getElementById('site-hint-mol');
 
         if (type === 'molecule') {
             molBtn.classList.replace('bg-slate-700', 'bg-blue-600');
@@ -381,6 +438,8 @@
             molSection.classList.remove('hidden');
             if (lengthField) lengthField.classList.add('hidden');
             title.textContent = 'Launch Small Molecule Design';
+            siteInput.placeholder = 'A:373-374,379-384  or  A:11-17,B:119-124';
+            siteHint?.classList.remove('hidden');
         } else {
             binderBtn.classList.replace('bg-slate-700', 'bg-blue-600');
             binderBtn.classList.replace('text-slate-400', 'text-white');
@@ -390,6 +449,8 @@
             molSection.classList.add('hidden');
             if (lengthField) lengthField.classList.remove('hidden');
             title.textContent = 'Launch Binder Design';
+            siteInput.placeholder = 'A:373-374,379-384';
+            siteHint?.classList.add('hidden');
         }
     }
 
@@ -411,7 +472,172 @@
     });
     fileInput.addEventListener('change', () => {
         if (fileInput.files.length) dropText.textContent = fileInput.files[0].name;
+        invalidateStagedToken();
     });
+
+    // ── Pocket preview (molecule jobs) ───────────────────────────────────────
+    const tokenField = document.getElementById('target_token');
+    const targetPathField = document.getElementById('target_path');
+    let _viewer = null;
+
+    function invalidateStagedToken() {
+        // Any change to the target file/path means the stored token no
+        // longer points at the right file. Wipe it; user can re-preview.
+        if (tokenField.value) {
+            tokenField.value = '';
+            const status = document.getElementById('preview-status');
+            if (status) status.textContent =
+                'Target changed — click Validate & preview again to refresh.';
+        }
+    }
+
+    targetPathField?.addEventListener('input', invalidateStagedToken);
+    dropZone.addEventListener('drop', invalidateStagedToken);
+
+    async function stageTarget() {
+        const fd = new FormData();
+        if (fileInput.files.length) {
+            fd.append('target', fileInput.files[0]);
+        } else if (targetPathField?.value.trim()) {
+            fd.append('target_path', targetPathField.value.trim());
+        } else {
+            return { ok: false, error: 'Provide a target file or path first.' };
+        }
+        const r = await fetch('/api/preview/stage-target', { method: 'POST', body: fd });
+        if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            return { ok: false, error: data.detail || `Stage failed (${r.status})` };
+        }
+        const data = await r.json();
+        tokenField.value = data.token;
+        return { ok: true, ...data };
+    }
+
+    async function runPreview() {
+        const errEl = document.getElementById('preview-error');
+        const warnEl = document.getElementById('preview-warnings');
+        const summaryEl = document.getElementById('preview-summary');
+        const status = document.getElementById('preview-status');
+        errEl.classList.add('hidden'); warnEl.classList.add('hidden');
+        summaryEl.classList.add('hidden');
+        status.textContent = 'Staging target...';
+
+        // Stage if we don't already have a token
+        if (!tokenField.value) {
+            const staged = await stageTarget();
+            if (!staged.ok) {
+                errEl.textContent = staged.error;
+                errEl.classList.remove('hidden');
+                status.textContent = '';
+                return;
+            }
+        }
+
+        const site = document.getElementById('site_input').value.trim();
+        if (!site) {
+            errEl.textContent = 'Enter a binding site first.';
+            errEl.classList.remove('hidden');
+            status.textContent = '';
+            return;
+        }
+
+        status.textContent = 'Extracting pocket...';
+        const fd = new FormData();
+        fd.append('token', tokenField.value);
+        fd.append('site', site);
+        fd.append('pocket_dist',
+                  document.getElementById('preview_pocket_dist')?.value || '8.0');
+        const r = await fetch('/api/preview/pocket', { method: 'POST', body: fd });
+        let data;
+        try { data = await r.json(); }
+        catch (e) {
+            errEl.textContent = `Preview failed (${r.status})`;
+            errEl.classList.remove('hidden'); status.textContent = ''; return;
+        }
+        if (!data.ok) {
+            errEl.textContent = data.error || 'Preview failed';
+            errEl.classList.remove('hidden'); status.textContent = ''; return;
+        }
+        renderPreview(data);
+        status.textContent = data.is_multichain
+            ? `Pocket spans ${data.site_chains.length} chains.`
+            : `Single-chain pocket (${data.site_chains[0]}).`;
+    }
+
+    function renderPreview(d) {
+        document.getElementById('preview-summary').classList.remove('hidden');
+
+        // Summary table
+        document.getElementById('ps-chains').textContent = d.site_chains.join(', ');
+        document.getElementById('ps-anchors').textContent =
+            Object.entries(d.anchors_per_chain)
+                .map(([c, n]) => `${c}: ${n}`).join('   ');
+        document.getElementById('ps-pocket').textContent =
+            `${d.pocket_residue_count} residues`;
+        const c = d.center_xyz;
+        document.getElementById('ps-center').textContent =
+            `(${c[0].toFixed(2)}, ${c[1].toFixed(2)}, ${c[2].toFixed(2)})`;
+        const bbox = d.bbox_capped
+            ? `${d.bbox_size.toFixed(1)} Å (capped from ${d.bbox_size_raw.toFixed(1)} Å)`
+            : `${d.bbox_size.toFixed(1)} Å`;
+        document.getElementById('ps-bbox').textContent = bbox;
+        document.getElementById('ps-radius').textContent =
+            `${d.pocketxmol_radius.toFixed(1)} Å`;
+
+        // Warnings
+        const warnEl = document.getElementById('preview-warnings');
+        if (d.warnings && d.warnings.length) {
+            warnEl.innerHTML = '<strong>Warnings:</strong><ul class="list-disc ml-5 mt-1">'
+                + d.warnings.map(w => `<li>${w}</li>`).join('')
+                + '</ul>';
+            warnEl.classList.remove('hidden');
+        } else {
+            warnEl.classList.add('hidden');
+        }
+
+        // 3D viewer — pocket only (already includes any cross-chain neighbours)
+        const div = document.getElementById('preview-viewer');
+        div.innerHTML = '';
+        if (typeof $3Dmol === 'undefined') {
+            div.innerHTML = '<div class="text-slate-500 text-xs p-4">3Dmol.js not loaded</div>';
+            return;
+        }
+        _viewer = $3Dmol.createViewer(div, { backgroundColor: '#0a0f1a' });
+        _viewer.addModel(d.pocket_pdb, 'pdb');
+        _viewer.setStyle({}, { cartoon: { color: 'lightgrey' }, stick: { radius: 0.10, colorscheme: 'greyCarbon' } });
+        // Highlight anchor residues per chain in red
+        const byChain = {};
+        d.site_pairs.forEach(([ch, r]) => {
+            byChain[ch] = byChain[ch] || [];
+            byChain[ch].push(r);
+        });
+        Object.entries(byChain).forEach(([ch, rs]) => {
+            _viewer.setStyle(
+                { chain: ch, resi: rs },
+                { stick: { radius: 0.18, colorscheme: 'redCarbon' },
+                  cartoon: { color: 'salmon' } }
+            );
+        });
+        _viewer.zoomTo();
+        _viewer.render();
+    }
+
+    document.getElementById('preview-btn')?.addEventListener('click', runPreview);
+
+    // Keep the preview pocket-distance and the launch-form pocket_dist
+    // in sync — otherwise the user can preview at one radius and launch
+    // at another. Both fields exist for layout reasons (preview block vs.
+    // molecule settings grid). Distance changes the *parameter* to the
+    // preview, not the staged target itself, so the token stays valid.
+    const previewPdEl = document.getElementById('preview_pocket_dist');
+    const launchPdEl = document.querySelector('input[name="pocket_dist"]');
+    function _syncPocketDist(src, dst) {
+        return () => {
+            if (dst && src.value !== dst.value) dst.value = src.value;
+        };
+    }
+    previewPdEl?.addEventListener('input', _syncPocketDist(previewPdEl, launchPdEl));
+    launchPdEl?.addEventListener('input', _syncPocketDist(launchPdEl, previewPdEl));
 
     // ── BindCraft count update ───────────────────────────────────────────────
     function updateBindCraftCounts() {
@@ -466,8 +692,13 @@
         formData.append('gpu_id', form.gpu_id.value);
         formData.append('site', form.site.value);
 
-        // File or path
-        if (fileInput.files.length) {
+        // Target source: staged token (preferred) → file upload → server path.
+        // The token, if present, points at a file already on disk that
+        // /api/jobs will promote into the job's uploads dir without
+        // re-uploading bytes from the browser.
+        if (tokenField.value) {
+            formData.append('target_token', tokenField.value);
+        } else if (fileInput.files.length) {
             formData.append('target', fileInput.files[0]);
         }
         formData.append('target_path', form.target_path.value);

@@ -849,6 +849,71 @@ def write_bindcraft_settings(target_path, chain_id, site_resnums, length_min, le
     Path(out_path).write_text(json.dumps(settings, indent=2))
 
 
+# ── PDB renumbering for tools that require contiguous residues ─────────────────
+
+def _renumber_pdb_contiguous(pdb_path, chain_id, out_dir):
+    """Renumber a PDB chain to contiguous 1..N residue numbers.
+
+    Returns (renumbered_pdb_path, old_to_new_map) where old_to_new_map
+    maps original residue numbers to new ones. Only needed when the PDB
+    has gaps in residue numbering (e.g., 761..790, 981..1030).
+
+    If already contiguous, returns (original_path, identity_map).
+    """
+    out_dir = Path(out_dir)
+    # Parse residue numbers in order of appearance
+    seen = []
+    seen_set = set()
+    with open(pdb_path) as f:
+        for line in f:
+            if line.startswith(("ATOM", "HETATM")):
+                ch = line[21].strip()
+                if ch != chain_id:
+                    continue
+                try:
+                    resnum = int(line[22:26].strip())
+                except ValueError:
+                    continue
+                if resnum not in seen_set:
+                    seen.append(resnum)
+                    seen_set.add(resnum)
+
+    if not seen:
+        return pdb_path, {}
+
+    # Check if already contiguous
+    is_contiguous = all(seen[i] + 1 == seen[i + 1] for i in range(len(seen) - 1))
+    if is_contiguous:
+        old_to_new = {r: r for r in seen}
+        return pdb_path, old_to_new
+
+    # Build mapping: old resnum → new (1-based contiguous)
+    old_to_new = {r: i + 1 for i, r in enumerate(seen)}
+
+    # Rewrite PDB with new residue numbers
+    renumbered_path = out_dir / f"{Path(pdb_path).stem}_renum.pdb"
+    with open(pdb_path) as fin, open(renumbered_path, "w") as fout:
+        for line in fin:
+            if line.startswith(("ATOM", "HETATM")):
+                ch = line[21].strip()
+                try:
+                    resnum = int(line[22:26].strip())
+                except ValueError:
+                    fout.write(line)
+                    continue
+                if ch == chain_id and resnum in old_to_new:
+                    new_num = old_to_new[resnum]
+                    line = line[:22] + f"{new_num:4d}" + line[26:]
+                fout.write(line)
+            else:
+                fout.write(line)
+
+    n_gaps = len(seen) - 1 - sum(1 for i in range(len(seen) - 1) if seen[i] + 1 == seen[i + 1])
+    log(f"  PDB renumbered: {seen[0]}-{seen[-1]} → 1-{len(seen)} ({n_gaps} gaps filled)")
+
+    return str(renumbered_path), old_to_new
+
+
 # ── Tool runners ───────────────────────────────────────────────────────────────
 
 def run_rfdiffusion(target_path, chain_id, site_resnums, length_min, length_max,
@@ -889,15 +954,25 @@ def run_rfdiffusion(target_path, chain_id, site_resnums, length_min, length_max,
             f"Chain {chain_id} not found in {target_path} "
             f"(available: {list(chain_info)})")
     target_len = tchain["length"] if tchain else 200  # fallback for dry_run
-    # Use actual PDB residue numbers (not 1-N) for contig spec
     residues = tchain["residues"] if tchain else list(range(1, 201))
+
+    # RFdiffusion requires contiguous residue numbering. Auto-renumber if gaps.
+    rf_target = str(target_path)
+    rf_site_resnums = list(site_resnums)
+    if not dry_run:
+        renum_path, old_to_new = _renumber_pdb_contiguous(
+            str(target_path), chain_id, out_dir)
+        if renum_path != str(target_path):
+            rf_target = renum_path
+            rf_site_resnums = [old_to_new[r] for r in site_resnums if r in old_to_new]
+            residues = [old_to_new[r] for r in residues if r in old_to_new]
     res_start, res_end = residues[0], residues[-1]
 
     # RFdiffusion works best with 3-6 hotspot residues. If the user specified
     # more, subsample to ~5 evenly spaced residues, preferring those with
     # strong chemical identity (charged, aromatic) over featureless ones (G, A, S).
     MAX_HOTSPOTS = 6
-    rf_site = list(site_resnums)
+    rf_site = list(rf_site_resnums)
     if len(rf_site) > MAX_HOTSPOTS:
         # Score each residue by chemical identity
         # Build resnum → amino acid mapping from chain info
@@ -966,7 +1041,7 @@ def run_rfdiffusion(target_path, chain_id, site_resnums, length_min, length_max,
     rf_cmd = [
         "conda", "run", "--no-capture-output", *cfg.conda_run_args("rfdiffusion"),
         "python", f"{RFDIFFUSION_DIR}/scripts/run_inference.py",
-        f"inference.input_pdb={Path(target_path).resolve()}",
+        f"inference.input_pdb={Path(rf_target).resolve()}",
         f"contigmap.contigs={contig}",
         f"ppi.hotspot_res=[{hotspots}]",
         f"inference.num_designs={n_designs}",
@@ -1254,6 +1329,27 @@ def strip_pdb_insertion_codes(src_path, dst_path):
     Path(dst_path).write_text("\n".join(out) + "\n")
 
 
+def sanitize_target_pdb(src_path, dst_path):
+    """
+    Write a cleaned copy of src_path for binder-design tools:
+      - HETATM records removed (waters, ligands, ions, cryoprotectants).
+        PXDesign's pdb_to_cif splits chain A into A (protein) + B (HETATM),
+        then its chain-mapping check raises ValueError. Stripping HETATM
+        prevents that and also simplifies Proteina Complexa / Boltz inputs.
+      - CONECT records removed (references to stripped HETATMs would dangle).
+      - Insertion codes (PDB col 27) cleared — BindCraft/ColabDesign reject them.
+    """
+    lines = Path(src_path).read_text().splitlines()
+    out = []
+    for line in lines:
+        if line.startswith(("HETATM", "CONECT", "ANISOU")):
+            continue
+        if line.startswith("ATOM") and len(line) >= 27 and line[26] != " ":
+            line = line[:26] + " " + line[27:]
+        out.append(line)
+    Path(dst_path).write_text("\n".join(out) + "\n")
+
+
 def _load_bindcraft_metrics(design_path):
     """
     Load BindCraft final_design_stats.csv and return dict:
@@ -1335,11 +1431,7 @@ def run_bindcraft(target_path, chain_id, site_resnums, length_min, length_max,
             _bin_path.chmod(_bin_path.stat().st_mode | 0o755)
             log(f"BindCraft: fixed execute permission on {_bin_path.name}")
 
-    # BindCraft/ColabDesign rejects PDBs with insertion codes — strip them first
-    clean_pdb = out_dir / f"{Path(target_path).stem}_clean.pdb"
-    strip_pdb_insertion_codes(target_path, clean_pdb)
-    target_path = clean_pdb
-    log(f"BindCraft: stripped insertion codes → {clean_pdb}")
+    # Target is pre-sanitized in main() (HETATMs + insertion codes stripped).
 
     design_path   = out_dir / "bindcraft_output"
     settings_path = out_dir / "settings.json"
@@ -2074,6 +2166,13 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
     # produces ~2 candidates after search; nsamples=n_designs//2 gives ~n_designs outputs
     nsamples = max(2, n_designs // 2)
 
+    # Size-aware batch_size: pair representation memory ~ N². 24 GB GPUs OOM at
+    # batch_size=4 once target+binder pushes total N past ~340 (e.g. 382-res target
+    # + 90-res binder = 472). Drop to 1 for large inputs; keep 4 for normal range.
+    target_len = len(get_chain_info(target_path).get(chain_id, {}).get("residues", []))
+    total_n = target_len + length_max
+    pc_batch_size = 1 if total_n > 340 else 4
+
     complexa_bin = f"{PROTEINA_COMPLEXA_VENV}/bin/complexa"
 
     # Run full design pipeline (generate → filter → evaluate → analyze).
@@ -2086,7 +2185,7 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
         f"++generation.dataloader.dataset.nres.nsamples={nsamples}",
         f"++generation.dataloader.dataset.nres.low={length_min}",
         f"++generation.dataloader.dataset.nres.high={length_max}",
-        f"++generation.dataloader.batch_size=4",
+        f"++generation.dataloader.batch_size={pc_batch_size}",
         f"++generation.search.algorithm=best-of-n",
         f"++generation.search.best_of_n.replicas=2",
         f"++gen_njobs=1",
@@ -2094,7 +2193,8 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
         f"++seed=42",
     ]
 
-    log(f"Proteina Complexa: running {n_designs} designs (nsamples={nsamples})...")
+    log(f"Proteina Complexa: running {n_designs} designs (nsamples={nsamples}, "
+        f"target_len={target_len}, total_N={total_n}, batch_size={pc_batch_size})...")
 
     # Build environment: source .env paths + Complexa-specific vars
     extra_env = {
@@ -2343,11 +2443,22 @@ def run_rfdiffusion3(target_path, chain_id, site_resnums, length_min, length_max
 
     chain_len = tchain["length"]
     residues = tchain.get("residues", [])
+
+    # RFdiffusion3 requires contiguous residue numbering. Auto-renumber if gaps.
+    rf3_target = str(target_path)
+    rf3_site = list(site_resnums)
+    if not dry_run:
+        renum_path, old_to_new = _renumber_pdb_contiguous(
+            str(target_path), chain_id, out_dir)
+        if renum_path != str(target_path):
+            rf3_target = renum_path
+            rf3_site = [old_to_new[r] for r in site_resnums if r in old_to_new]
+            residues = [old_to_new[r] for r in residues if r in old_to_new]
+
     first_resnum = residues[0] if residues else 1
     last_resnum = residues[-1] if residues else chain_len
 
-    # Hotspots use original PDB residue numbers (not 1-based indices)
-    hotspot_str = ",".join(f"{chain_id}{r}" for r in site_resnums)
+    hotspot_str = ",".join(f"{chain_id}{r}" for r in rf3_site)
 
     # Contig: binder (variable length), chain break, fixed target
     contig = f"{length_min}-{length_max},/0,{chain_id}{first_resnum}-{last_resnum}"
@@ -2359,7 +2470,7 @@ def run_rfdiffusion3(target_path, chain_id, site_resnums, length_min, length_max
     input_json = {}
     for i in range(n_designs):
         input_json[f"design_{i:04d}"] = {
-            "input": str(Path(target_path).resolve()),
+            "input": str(Path(rf3_target).resolve()),
             "contig": contig,
             "length": f"{total_len_min}-{total_len_max}",
             "select_hotspots": hotspot_str,
@@ -2373,12 +2484,18 @@ def run_rfdiffusion3(target_path, chain_id, site_resnums, length_min, length_max
         json.dump(input_json, f, indent=2)
     log(f"RFdiffusion3: input JSON written → {json_path}")
 
+    # Size-aware batch_size: diffusion pair rep scales ~N². 24 GB GPUs OOM at
+    # batch_size=4 once target+binder pushes total N past ~340. Drop to 1 for
+    # large inputs; keep 4 for normal range. Goal: avoid OOM, accept slowdown.
+    total_n = chain_len + length_max
+    rfd3_batch_size = 1 if total_n > 340 else 4
+
     cmd = [
         "conda", "run", "--no-capture-output", "-p", RFD3_ENV,
         "rfd3", "design",
         f"inputs={json_path}",
         f"out_dir={output_subdir}",
-        "diffusion_batch_size=4",
+        f"diffusion_batch_size={rfd3_batch_size}",
         "inference_sampler.num_timesteps=200",
         "inference_sampler.step_scale=1.5",
     ]
@@ -2386,10 +2503,10 @@ def run_rfdiffusion3(target_path, chain_id, site_resnums, length_min, length_max
         "PYTHONNOUSERSITE": "1",
         "FOUNDRY_CHECKPOINT_DIRS": RFD3_WEIGHTS,
     }
-    # Each input task produces diffusion_batch_size models (4 diverse seeds)
-    rfd3_batch_size = 4
+    # Each input task produces diffusion_batch_size models with different seeds
     n_total_models = n_designs * rfd3_batch_size
-    log(f"RFdiffusion3: generating {n_designs} designs × {rfd3_batch_size} models = {n_total_models} candidates...")
+    log(f"RFdiffusion3: generating {n_designs} designs × {rfd3_batch_size} models "
+        f"= {n_total_models} candidates (target_len={chain_len}, total_N={total_n})...")
     run_cmd(cmd, timeout=None, dry_run=dry_run, extra_env=rfd3_env,
             progress_dir=str(output_subdir), progress_pattern="*.cif.gz",
             progress_total=n_total_models, progress_label="rfdiffusion3",
@@ -5935,10 +6052,16 @@ def main():
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    raw_target_path = target_path
+    clean_target = out_dir / f"{target_path.stem}_clean.pdb"
+    sanitize_target_pdb(target_path, clean_target)
+    target_path = clean_target
+
     log("=" * 62)
     log("generate_binders.py — Multi-tool binder design pipeline")
     log("=" * 62)
     log(f"Target:           {target_path}")
+    log(f"Target (raw):     {raw_target_path}")
     log(f"Site:             chain={chain_id}, residues={site_resnums}")
     log(f"Length:           {length_min}–{length_max} aa")
     log(f"Tools:            {tools}")

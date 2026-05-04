@@ -34,6 +34,11 @@ _SHARED_DIR = Path(_cfg.shared_data_dir)
 _SHARED_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR = _SHARED_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+# Scratch dir for in-progress launch-form uploads (pocket preview).
+# Each entry is a token-keyed sub-directory holding the staged PDB/CIF.
+# Promoted into UPLOADS_DIR on submit; orphans wiped on app startup.
+SCRATCH_UPLOADS_DIR = UPLOADS_DIR / "_scratch"
+SCRATCH_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = _SHARED_DIR / f"proteaflow_{_HOST}.db"
 SHARED_JSON = _SHARED_DIR / "shared.json"
 HOSTNAME = _HOST

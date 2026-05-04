@@ -126,6 +126,8 @@ def load_rankings(csv_path: Path) -> pd.DataFrame:
         "qed", "sa_score", "vina_score", "mw", "logp", "tpsa",
         "num_heavy_atoms", "num_rotatable_bonds", "molar_refractivity", "fsp3",
         "ligand_efficiency", "pocket_fit",
+        # Boltz-2 affinity rescoring (rerank_molecules.py --boltz_affinity)
+        "boltz_affinity_log_ic50", "boltz_affinity_prob_binder",
     ]
     for col in numeric_cols:
         if col in df.columns:
