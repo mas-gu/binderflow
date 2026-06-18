@@ -10,8 +10,10 @@ ProteaFlow runs ten generative AI tools, validates every design, and ranks the b
 
 ## Example of designs against biological relevant targets
 
-![PDIA6](docs/binders/pdia6linker_rank0003.png)
-![Ras](docs/binders/rasgap_T398.png)
+<p>
+  <img src="docs/binders/pdia6linker_rank0003.png" alt="PDIA6" width="263">
+  <img src="docs/binders/rasgap_T398.png" alt="Ras" width="318">
+</p>
 
 ## Pipeline Overview
 
