@@ -1285,12 +1285,43 @@ def run_boltzgen(target_path, chain_id, site_resnums, length_min, length_max,
         bg_metrics = _load_boltzgen_metrics(raw_dir)
         log(f"  BoltzGen: loaded metrics for {len(bg_metrics)} sequences from CSV")
 
+        # Known target sequence — used to identify the binder chain by DISSIMILARITY rather than
+        # by length. The old 'shortest chain = binder' heuristic silently grabs the TARGET when the
+        # binder is longer than the target (e.g. 200-250 aa binders vs a 166 aa HRAS target), so the
+        # complex YAML ends up with the target sequence duplicated into chain B.
+        def _pdb_chain_seq(path, cid):
+            try:
+                import gemmi
+                st = gemmi.read_structure(str(path))
+                names = [c.name for c in st[0]]
+                ch = st[0][cid] if cid in names else st[0][0]
+                out = []
+                for r in ch:
+                    info = gemmi.find_tabulated_residue(r.name)
+                    if info and info.is_amino_acid():
+                        out.append(info.one_letter_code.upper())
+                return "".join(out)
+            except Exception:
+                return ""
+
+        tgt_seq = _pdb_chain_seq(target_path, chain_id)
+
+        def _ident_to_target(seq):
+            if not seq or not tgt_seq:
+                return 0.0
+            n = min(len(seq), len(tgt_seq))
+            return (sum(a == b for a, b in zip(seq[:n], tgt_seq[:n])) / n) if n else 0.0
+
         for i, cif in enumerate(cifs):
             chain_info = extract_cif_chain_info(cif)
-            # BoltzGen CIFs place the binder in the shorter chain regardless of YAML entity IDs
-            # (typically chain A=binder, chain B=target, opposite of the input YAML convention)
-            binder_info = (min(chain_info.values(), key=lambda v: v["length"])
-                           if chain_info else {})
+            # binder = protein chain LEAST identical to the known target (length-agnostic).
+            # Fall back to the legacy shortest-chain pick only if the target sequence is unavailable.
+            pool = {k: v for k, v in chain_info.items()
+                    if v.get("sequence") and v.get("length", 0) >= 20} or chain_info
+            if pool and tgt_seq:
+                binder_info = min(pool.values(), key=lambda v: _ident_to_target(v.get("sequence", "")))
+            else:
+                binder_info = (min(pool.values(), key=lambda v: v["length"]) if pool else {})
             seq = binder_info.get("sequence", "")
             if not seq:
                 continue
@@ -1762,6 +1793,10 @@ def run_pxdesign(target_path, chain_id, site_resnums, length_min, length_max,
     px_env = {
         "LAYERNORM_TYPE": "torch",  # Protenix: use PyTorch LayerNorm (avoid CUDA JIT)
         "PYTHONNOUSERSITE": "1",    # isolate from ~/.local/ packages
+        # PXDesign imports protenix → deepspeed, whose op-builder compat check at
+        # import time requires CUDA_HOME with a working nvcc. conda cuda-nvcc is
+        # installed into the pxdesign env, so point CUDA_HOME at the env prefix.
+        "CUDA_HOME": cfg.conda_env("pxdesign"),
     }
     run_cmd(cmd, timeout=86400, extra_env=px_env, dry_run=dry_run,
             progress_dir=str(out_dir / "pxdesign_output"),
@@ -2171,7 +2206,23 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
     # + 90-res binder = 472). Drop to 1 for large inputs; keep 4 for normal range.
     target_len = len(get_chain_info(target_path).get(chain_id, {}).get("residues", []))
     total_n = target_len + length_max
-    pc_batch_size = 1 if total_n > 340 else 4
+    # RTX 4000 Ada 20 GB (this host, bz-wg3-plm06): Complexa weights alone take ~16 GB,
+    # so batch_size=4 OOMs in pair-rep allocation even at N≈296 (see memory
+    # feedback_complexa_batch_size.md). Force 1 for any target size on this GPU.
+    # On A40 40 GB, restore the `1 if total_n > 340 else 4` rule.
+    pc_batch_size = 1
+    # VRAM guard: the best-of-n search co-runs the PyTorch flow model AND the JAX/AF2
+    # reward model on the same GPU. On <~23 GiB cards (e.g. RTX 4000 Ada 20 GB) the flow
+    # model at batch_size>1 leaves no room for JAX to init a GPU stream — AF2 reward fails
+    # every batch, then torch OOMs. Force batch_size=1 on small GPUs regardless of total_n.
+    try:
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _vram_gib = _torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            if _vram_gib < 23.0:
+                pc_batch_size = 1
+    except Exception:
+        pass
 
     complexa_bin = f"{PROTEINA_COMPLEXA_VENV}/bin/complexa"
 
@@ -2196,15 +2247,33 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
     log(f"Proteina Complexa: running {n_designs} designs (nsamples={nsamples}, "
         f"target_len={target_len}, total_N={total_n}, batch_size={pc_batch_size})...")
 
-    # Build environment: source .env paths + Complexa-specific vars
+    # Build environment: inherit the machine's resolved paths from env.sh (the single
+    # source of truth, produced by `complexa init uv`; it sources .env and resolves all
+    # ${...} interpolation), then overlay the config-derived overrides. env.sh carries
+    # machine-specific paths the hardcoded defaults below get wrong — notably AF2_DIR,
+    # which points at the BindCraft params dir (where the AF2 multimer weights live), not
+    # the empty community_models/ckpts/AF2. Without it the AF2 reward model raises
+    # "No model parameters found" and every Complexa design dies instantly.
+    _envsh = Path(PROTEINA_COMPLEXA_DIR) / "env.sh"
+    _envsh_vars = {}
+    if _envsh.exists():
+        try:
+            _out = subprocess.run(
+                ["bash", "-c", f"set -a; source '{_envsh}' >/dev/null 2>&1; env -0"],
+                capture_output=True, text=True, cwd=PROTEINA_COMPLEXA_DIR, timeout=60,
+            ).stdout
+            for _kv in _out.split("\0"):
+                if "=" in _kv:
+                    _k, _v = _kv.split("=", 1)
+                    if _k in ("AF2_DIR", "ESM_DIR", "COMMUNITY_MODELS_PATH",
+                              "LOCAL_CHECKPOINT_PATH", "LOCAL_CACHE_DIR", "LOGURU_LEVEL",
+                              "FOLDSEEK_EXEC", "SC_EXEC", "DSSP_EXEC", "MMSEQS_EXEC", "TMOL_PATH"):
+                        _envsh_vars[_k] = _v
+        except Exception as _e:
+            log(f"  Proteina Complexa: could not source env.sh ({_e}); using hardcoded defaults")
+
     extra_env = {
-        "COMPLEXA_INIT": "uv",
-        "PYTHONNOUSERSITE": "1",
-        # Paths from .env needed by Complexa Hydra configs
-        "LOCAL_CODE_PATH": PROTEINA_COMPLEXA_DIR,
-        "LOCAL_DATA_PATH": _WEIGHTS_DIR,
-        "DATA_PATH": _WEIGHTS_DIR,
-        "CKPT_PATH": f"{PROTEINA_COMPLEXA_DIR}/ckpts",
+        # Hardcoded fallbacks (correct on a standard layout; overridden by env.sh below).
         "ESM_DIR": f"{PROTEINA_COMPLEXA_DIR}/community_models/ckpts/ESM2",
         "AF2_DIR": f"{PROTEINA_COMPLEXA_DIR}/community_models/ckpts/AF2",
         "FOLDSEEK_EXEC": f"{PROTEINA_COMPLEXA_VENV}/bin/foldseek",
@@ -2212,6 +2281,15 @@ def run_proteina_complexa(target_path, chain_id, site_resnums, length_min, lengt
         "DSSP_EXEC": f"{PROTEINA_COMPLEXA_DIR}/env/docker/internal/dssp",
         "MMSEQS_EXEC": f"{PROTEINA_COMPLEXA_VENV}/bin/mmseqs",
         "TMOL_PATH": f"{PROTEINA_COMPLEXA_VENV}/lib/python3.12/site-packages/tmol",
+        # env.sh-resolved machine paths win over the fallbacks above.
+        **_envsh_vars,
+        # Config-derived overrides (machine-portable; always take precedence).
+        "COMPLEXA_INIT": "uv",
+        "PYTHONNOUSERSITE": "1",
+        "LOCAL_CODE_PATH": PROTEINA_COMPLEXA_DIR,
+        "LOCAL_DATA_PATH": _WEIGHTS_DIR,
+        "DATA_PATH": _WEIGHTS_DIR,
+        "CKPT_PATH": f"{PROTEINA_COMPLEXA_DIR}/ckpts",
         "USE_V2_COMPLEXA_ARCH": "False",
     }
 
@@ -2530,10 +2608,26 @@ def run_rfdiffusion3(target_path, chain_id, site_resnums, length_min, length_max
                 binder_seq = None
 
                 if len(chains) >= 2:
-                    # Multi-chain: binder is the shorter chain
-                    chain_sizes = [(ch, sum(1 for r in ch if r.find_atom("CA", "\0"))) for ch in chains]
-                    chain_sizes.sort(key=lambda x: x[1])
-                    binder_ch = chain_sizes[0][0]
+                    # Multi-chain: identify the binder chain. Prefer the diffused_index_map metadata
+                    # (binder = chain with fewest target-mapped residues) — length-agnostic, so it
+                    # holds even when the binder is longer than the target. Fall back to shortest chain.
+                    binder_ch = None
+                    if Path(meta_path).exists():
+                        try:
+                            with open(meta_path) as mf:
+                                _mapped = set()
+                                for _o, _n in json.load(mf).get("diffused_index_map", {}).items():
+                                    _m = re.match(r"[A-Za-z](\d+)", _n)
+                                    if _m:
+                                        _mapped.add(int(_m.group(1)))
+                            binder_ch = min(chains, key=lambda ch: sum(
+                                1 for r in ch if r.find_atom("CA", "\0") and r.seqid.num in _mapped))
+                        except Exception:
+                            binder_ch = None
+                    if binder_ch is None:
+                        chain_sizes = [(ch, sum(1 for r in ch if r.find_atom("CA", "\0"))) for ch in chains]
+                        chain_sizes.sort(key=lambda x: x[1])
+                        binder_ch = chain_sizes[0][0]
                     binder_seq = "".join(
                         gemmi.find_tabulated_residue(r.name).one_letter_code
                         for r in binder_ch if r.find_atom("CA", "\0")
@@ -2815,7 +2909,7 @@ def populate_binder_composition(designs):
         d["binder_KE_fraction"] = (k + e) / len(seq_upper)
 
 
-def populate_interface_composition(designs, interface_dist=5.0):
+def populate_interface_composition(designs, interface_dist=5.0, target_chain_id="A"):
     """
     Compute K+E composition at the binder-target interface vs surface.
     Requires a complex structure (complex_cif or binder_pdb with target).
@@ -2916,10 +3010,16 @@ def populate_interface_composition(designs, interface_dist=5.0):
             n_skipped += 1
             continue
 
-        # Identify binder (fewer residues) and target (more)
+        # Identify target by the KNOWN site/target chain (length-agnostic — the binder can be longer
+        # than the target). Fall back to longest-chain only if the hinted chain is absent.
         sorted_chains = sorted(chain_res_counts.items(), key=lambda x: len(x[1]))
-        binder_chain = sorted_chains[0][0]
-        target_chain = sorted_chains[-1][0]
+        if target_chain_id and target_chain_id in chain_res_counts:
+            target_chain = target_chain_id
+            others = [c for c in chain_res_counts if c != target_chain]
+            binder_chain = max(others, key=lambda c: len(chain_res_counts[c])) if others else sorted_chains[0][0]
+        else:
+            binder_chain = sorted_chains[0][0]
+            target_chain = sorted_chains[-1][0]
 
         binder_atoms = chain_atoms[binder_chain]
         target_atoms = chain_atoms[target_chain]
@@ -3229,7 +3329,8 @@ def validate_esmfold(designs, val_dir, plddt_threshold=70.0, dry_run=False,
 def validate_boltz(designs, target_chain_seq, val_dir,
                    max_per_tool=20, target_len=0, dry_run=False,
                    site_resnums=None, target_residues=None,
-                   boltz_devices=1, n_tag="", c_tag=""):
+                   boltz_devices=1, n_tag="", c_tag="",
+                   force_site=False, site_max_distance=6.0, holo_ligands=None):
     """
     Stage 2: Boltz-2 uniform scoring of binder+target complex.
     BATCH MODE: all monomer-passing designs are predicted in a single Boltz-2
@@ -3419,8 +3520,20 @@ def validate_boltz(designs, target_chain_seq, val_dir,
             )
             if use_precomputed_msa:
                 yaml_content += "      msa: empty\n"
+            # HOLO context: add the nucleotide as CCD ligands (Boltz places GDP/AF3/MG in the HRAS
+            # nucleotide pocket). The first ligand (GDP) bears the alpha/beta phosphates that the
+            # forced pocket also targets, so the binder is driven to the catalytic phosphate region.
+            lig_chain = None
+            if holo_ligands:
+                for _i, _ccd in enumerate(holo_ligands):
+                    cid = "CDEFG"[_i]
+                    yaml_content += f"  - ligand:\n      id: {cid}\n      ccd: {_ccd}\n"
+                    if lig_chain is None:
+                        lig_chain = cid
             if site_indices:
                 contacts = "\n".join(f"        - [A, {r}]" for r in site_indices)
+                if force_site and lig_chain:                       # also force contact to the nucleotide phosphate
+                    contacts += f"\n        - [{lig_chain}, PA]\n        - [{lig_chain}, PB]"
                 yaml_content += (
                     "constraints:\n"
                     "  - pocket:\n"
@@ -3428,6 +3541,11 @@ def validate_boltz(designs, target_chain_seq, val_dir,
                     "      contacts:\n"
                     f"{contacts}\n"
                 )
+                if force_site:
+                    yaml_content += (
+                        f"      max_distance: {site_max_distance}\n"
+                        "      force: true\n"
+                    )
             yaml_path.write_text(yaml_content)
 
         # Run Boltz-2 batch prediction (single invocation, model loaded once)
@@ -3557,6 +3675,10 @@ def validate_boltz(designs, target_chain_seq, val_dir,
                 boltz_complex_pde = cdata.get("complex_pde", float("nan"))
                 boltz_complex_ipde= cdata.get("complex_ipde", float("nan"))
                 boltz_protein_iptm= cdata.get("protein_iptm", float("nan"))
+                # HOLO mode: the global iptm averages in the binder<->ligand interfaces. Score on the
+                # protein-protein iptm (binder<->HRAS) instead, when Boltz reports it.
+                if holo_ligands and boltz_protein_iptm == boltz_protein_iptm:
+                    boltz_iptm = boltz_protein_iptm
                 # complex_plddt and complex_iplddt are 0–1 in the JSON; convert to 0–100
                 raw_cplddt = cdata.get("complex_plddt", float("nan"))
                 raw_iplddt = cdata.get("complex_iplddt", float("nan"))
@@ -3588,9 +3710,13 @@ def validate_boltz(designs, target_chain_seq, val_dir,
         if pae_files:
             try:
                 pae_mat = np.load(pae_files[0])["pae"]  # shape (N_tokens, N_tokens), float32
-                # Off-diagonal block: rows=target (0:tlen), cols=binder (tlen:)
+                # Off-diagonal block: rows=target (0:tlen), cols=binder (tlen:bend).
+                # bend caps the binder columns BEFORE any holo ligand tokens (GDP/AF3/MG come after
+                # the binder in the YAML), so the interface PAE stays binder<->target, not target<->ligand.
+                blen = len(n_tag) + len(d.get("binder_sequence", "")) + len(c_tag)
+                bend = tlen + blen
                 if pae_mat.shape[0] > tlen and pae_mat.shape[1] > tlen:
-                    interface_block = pae_mat[:tlen, tlen:]
+                    interface_block = pae_mat[:tlen, tlen:bend]
                     boltz_min_interface_pae  = float(interface_block.min())
                     boltz_mean_interface_pae = float(interface_block.mean())
 
@@ -3598,7 +3724,7 @@ def validate_boltz(designs, target_chain_seq, val_dir,
                     if site_row_indices:
                         valid_rows = [r for r in site_row_indices if r < tlen]
                         if valid_rows:
-                            site_block = pae_mat[valid_rows][:, tlen:]
+                            site_block = pae_mat[valid_rows][:, tlen:bend]
                             boltz_site_min_pae  = float(site_block.min())
                             boltz_site_mean_pae = float(site_block.mean())
             except Exception as e:
@@ -3613,7 +3739,8 @@ def validate_boltz(designs, target_chain_seq, val_dir,
                 pde_data = np.load(pde_files[0])
                 pde_mat  = pde_data[list(pde_data.keys())[0]]  # shape (N, N)
                 if pde_mat.shape[0] > tlen and pde_mat.shape[1] > tlen:
-                    pde_block = pde_mat[:tlen, tlen:]
+                    _blen = len(n_tag) + len(d.get("binder_sequence", "")) + len(c_tag)
+                    pde_block = pde_mat[:tlen, tlen:tlen + _blen]
                     boltz_min_interface_pde  = float(pde_block.min())
                     boltz_mean_interface_pde = float(pde_block.mean())
             except Exception as e:
@@ -3716,15 +3843,24 @@ def _compute_site_metrics(args):
     Returns dict with site metrics, or None to skip.
     """
     import numpy as np
-    struct_file, site_set, n_site_residues, max_dist, interface_dist = args
+    struct_file, site_set, n_site_residues, max_dist, interface_dist, target_chain_hint = args
 
     chains, chain_res_counts = _parse_heavy_atoms(struct_file)
     if not chains or not chain_res_counts or len(chain_res_counts) < 2:
         return None
 
     sorted_chains = sorted(chain_res_counts.items(), key=lambda x: x[1])
-    binder_chain_id = sorted_chains[0][0]
-    target_chain_id = sorted_chains[-1][0]
+    # Identify target by the KNOWN site chain (site residues live on the target). The old
+    # 'longest chain = target' heuristic SWAPS them when the binder is longer than the target
+    # (e.g. 200-250 aa binders vs a 166 aa target) -> site residues looked up on the wrong chain
+    # -> garbage SIF. Fall back to length only if the hinted chain is absent.
+    if target_chain_hint and target_chain_hint in chain_res_counts:
+        target_chain_id = target_chain_hint
+        others = [(c, n) for c, n in chain_res_counts.items() if c != target_chain_id]
+        binder_chain_id = max(others, key=lambda x: x[1])[0] if others else sorted_chains[0][0]
+    else:
+        binder_chain_id = sorted_chains[0][0]
+        target_chain_id = sorted_chains[-1][0]
 
     binder_atoms = chains[binder_chain_id]
     target_atoms = chains[target_chain_id]
@@ -3863,7 +3999,7 @@ def _compute_site_metrics(args):
 
 def geometric_site_filter(designs, site_resnums, target_residues,
                           max_dist=15.0, min_site_fraction=0.0, interface_dist=5.0,
-                          dry_run=False):
+                          dry_run=False, target_chain_id="A"):
     """
     Site contact filter: for each design, count how many site residues have
     at least one binder heavy atom within max_dist Å.
@@ -3944,7 +4080,7 @@ def geometric_site_filter(designs, site_resnums, target_residues,
 
         site_set = all_site_renum if use_renumbered else all_site_orig
         worker_indices.append(i)
-        worker_args.append((struct_file, site_set, n_site_residues, max_dist, interface_dist))
+        worker_args.append((struct_file, site_set, n_site_residues, max_dist, interface_dist, target_chain_id))
 
     # Run in parallel
     n_workers = min(max(1, cpu_count() - 2), 12, len(worker_args) or 1)
@@ -4078,12 +4214,17 @@ def compute_refolding_rmsd(designs, dry_run=False, n_tag="", c_tag=""):
                 esm_chains = _parse_ca_coords_pdb(esm_pdb)
             esm_cas = list(esm_chains.values())[0] if esm_chains else []
 
-            # Boltz CIF: multi-chain complex, binder is the shorter chain
+            # Boltz CIF: multi-chain complex. The binder chain is the one whose length matches the
+            # monomer (esm_cas) — NOT simply the shortest chain (which mis-selects the target when the
+            # binder is longer than the target, e.g. 200-250 aa binders vs a 166 aa target).
             cif_chains = _parse_ca_coords_cif(boltz_cif)
             if len(cif_chains) < 2:
                 n_skipped += 1
                 continue
-            binder_chain = min(cif_chains, key=lambda c: len(cif_chains[c]))
+            if esm_cas:
+                binder_chain = min(cif_chains, key=lambda c: abs(len(cif_chains[c]) - len(esm_cas)))
+            else:
+                binder_chain = min(cif_chains, key=lambda c: len(cif_chains[c]))
             boltz_cas = cif_chains[binder_chain]
 
             # Match by residue count (both should be 1-based sequential)
@@ -5118,6 +5259,97 @@ def copy_top_designs(designs, top_dir, target_pdb=None, n=50, site_resnums=None,
                             target_residues=target_residues)
 
 
+def _pml_to_cxc(pml_path):
+    """Write a ChimeraX .cxc next to a just-generated PyMOL .pml view (same scene).
+    Faithful translation of the binder-view command set: load/align/color/show/transparency.
+    Best-effort — never breaks the run if a line doesn't parse."""
+    import re as _re
+    pml_path = Path(pml_path)
+    NAMED = {"grey70": "#b3b3b3", "grey80": "#cccccc", "gray70": "#b3b3b3", "red": "#ff0000",
+             "palegreen": "#98fb98", "plum": "#dda0dd", "violet": "#ee82ee", "wheat": "#f5deb3",
+             "white": "white", "marine": "#0080ff", "orange": "#ff8000", "green": "#00cc00",
+             "firebrick": "#b22222", "cyan": "#00ffff", "magenta": "#ff00ff", "yellow": "#ffff00"}
+
+    def _hex(rgb):
+        r, g, b = (int(max(0, min(1, float(x))) * 255) for x in rgb)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    objmap, custom, nmodel = {}, {}, 0
+    out = [f"# ChimeraX view (auto, equivalent of {pml_path.name})", "set bgColor white", ""]
+
+    def _col(c):
+        c = c.strip()
+        return custom.get(c) or NAMED.get(c, c)
+
+    def _sel(s):
+        s = s.strip()
+        obj = _re.split(r"\s+and\s+", s, 1)[0].strip()
+        if obj not in objmap:
+            return None
+        spec = f"#{objmap[obj]}"
+        ch = _re.findall(r"chain\s+(\w+)", s)
+        ri = _re.search(r"resi\s+([\d+]+)", s)
+        if ch:
+            spec += "/" + ",".join(ch)
+        if ri:
+            spec += ":" + ri.group(1).replace("+", ",")
+        return spec
+
+    try:
+        for raw in pml_path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = _re.match(r"set_color\s+(\S+)\s*,\s*\[([^\]]+)\]", line)
+            if m:
+                custom[m.group(1)] = _hex(m.group(2).split(","))
+                continue
+            head, _, rest = line.partition(" ")
+            args = [a.strip() for a in rest.split(",")]
+            if head == "bg_color":
+                out.append("set bgColor " + (_col(args[0]) if args else "white"))
+            elif head == "load":
+                fn = args[0]; name = args[1] if len(args) > 1 else os.path.splitext(args[0])[0]
+                nmodel += 1; objmap[name] = nmodel
+                out.append(f"open {fn}")
+            elif head == "align":
+                a, b = objmap.get(args[0]), objmap.get(args[1]) if len(args) > 1 else (None, None)
+                if a and b:
+                    out.append(f"matchmaker #{a} to #{b}")
+            elif head == "color":
+                sp = _sel(args[1]) if len(args) > 1 else None
+                if sp:
+                    out.append(f"color {sp} {_col(args[0])}")
+            elif head == "show":
+                sp = _sel(args[1]) if len(args) > 1 else None
+                if sp:
+                    if args[0] == "cartoon":
+                        out.append(f"cartoon {sp}")
+                    elif args[0] == "sticks":
+                        out.append(f"show {sp} atoms"); out.append(f"style {sp} stick")
+                    elif args[0] == "spheres":
+                        out.append(f"style {sp} sphere")
+            elif head == "disable":
+                mid = objmap.get(args[0])
+                if mid:
+                    out.append(f"hide #{mid} models")
+            elif head == "set" and args and args[0] == "cartoon_transparency":
+                val = int(float(args[1]) * 100)
+                if len(args) > 2 and objmap.get(args[2]):
+                    out.append(f"transparency #{objmap[args[2]]} {val} target c")
+                else:
+                    out.append(f"transparency {val} target c")
+            elif head in ("zoom", "orient"):
+                out.append("view")
+        out.append("view")
+        cxc = pml_path.with_suffix(".cxc")
+        cxc.write_text("\n".join(out) + "\n")
+        return cxc
+    except Exception as _e:
+        log(f"  (ChimeraX .cxc translation skipped for {pml_path.name}: {_e})")
+        return None
+
+
 def _write_pml_by_chain(top_dir, copied_files, target_name, site_resnums=None,
                         cos_angle=None):
     """PyMOL script: load all structures, align to target, color by chain."""
@@ -5269,6 +5501,9 @@ def _write_pml_by_chain(top_dir, copied_files, target_name, site_resnums=None,
     pml_path = top_dir / "view_by_chain.pml"
     pml_path.write_text("\n".join(l for l in lines if l is not None) + "\n")
     log(f"PyMOL script (by chain) → {pml_path}")
+    cxc = _pml_to_cxc(pml_path)
+    if cxc:
+        log(f"ChimeraX script (by chain) → {cxc}")
 
 
 def _write_pml_by_iptm(top_dir, copied_files, target_name, site_resnums=None):
@@ -5351,6 +5586,9 @@ def _write_pml_by_iptm(top_dir, copied_files, target_name, site_resnums=None):
     pml_path = top_dir / "view_by_iptm.pml"
     pml_path.write_text("\n".join(l for l in lines if l is not None) + "\n")
     log(f"PyMOL script (by iPTM) → {pml_path}")
+    cxc = _pml_to_cxc(pml_path)
+    if cxc:
+        log(f"ChimeraX script (by iPTM) → {cxc}")
 
 
 def _write_per_tool_folders(designs, top_dir, target_pdb, target_name,
@@ -5501,6 +5739,7 @@ def _write_per_tool_folders(designs, top_dir, target_pdb, target_name,
 
         pml_path = tool_dir / f"view_{tool}.pml"
         pml_path.write_text("\n".join(pml_lines) + "\n")
+        _pml_to_cxc(pml_path)
 
         log(f"  {tool}: {len(copied)} designs → {tool_dir}")
 
@@ -5947,6 +6186,16 @@ def main():
                              "Default: use all available GPUs.")
     parser.add_argument("--dry_run",   action="store_true",
                         help="Print commands without executing")
+    parser.add_argument("--force_site", action="store_true",
+                        help="Boltz-2 validation: FORCE the binder pocket onto the site "
+                             "(pocket force:true). With --holo_ligands, the forced pocket also "
+                             "targets the nucleotide (phosphate), driving the binder to the catalytic region.")
+    parser.add_argument("--site_max_distance", type=float, default=6.0,
+                        help="max_distance (A) for the forced Boltz-2 pocket constraint (default 6.0).")
+    parser.add_argument("--holo_ligands", default=None,
+                        help="Comma-separated CCD codes added as ligands to the Boltz-2 complex "
+                             "validation, e.g. 'GDP,AF3,MG' (holo/nucleotide context). The first "
+                             "ligand bears the phosphate and is included in the forced pocket.")
     parser.add_argument("--reprediction", action="store_true",
                         help="Enable Boltz-2 re-prediction for ALL tools including "
                              "those with native iPTM scores (BindCraft, BoltzGen, PXDesign). "
@@ -6262,7 +6511,9 @@ def main():
             site_resnums=site_resnums,
             target_residues=tchain.get("residues"),
             boltz_devices=args.boltz_devices,
-            n_tag=args.n_tag, c_tag=args.c_tag)
+            n_tag=args.n_tag, c_tag=args.c_tag,
+            force_site=args.force_site, site_max_distance=args.site_max_distance,
+            holo_ligands=([x.strip() for x in args.holo_ligands.split(",")] if args.holo_ligands else None))
     else:
         # --reprediction OFF: only backbone-only tools get Boltz-2
         backbone_designs = [d for d in passing
@@ -6307,7 +6558,8 @@ def main():
                               max_dist=max_dist,
                               min_site_fraction=args.min_site_fraction,
                               interface_dist=args.interface_dist,
-                              dry_run=args.dry_run)
+                              dry_run=args.dry_run,
+                              target_chain_id=chain_id)
 
     log(f"\n{'─' * 50}")
     log("STEP: Rosetta interface scoring (Stage 3)")
@@ -6319,7 +6571,7 @@ def main():
     log("STEP: Secondary structure + composition analysis")
     log(f"{'─' * 50}")
     populate_binder_composition(all_designs)
-    populate_interface_composition(all_designs)
+    populate_interface_composition(all_designs, target_chain_id=chain_id)
     if not args.dry_run:
         populate_binder_ss(all_designs)
     else:

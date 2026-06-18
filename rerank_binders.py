@@ -558,8 +558,76 @@ def collect_proteina_complexa(tool_dir):
     return designs
 
 
+def collect_rfdiffusion3(tool_dir):
+    """Collect designs from an existing rfdiffusion3/ output directory.
+
+    Mirrors run_rfdiffusion3()'s collection in generate_binders.py EXACTLY so
+    design_ids (rfdiffusion3_NNNN, assigned by sorted cif.gz enumeration order)
+    match the cached validation files (Boltz/Rosetta keyed by design_id).
+    """
+    import gzip
+    import json as _json
+    import gemmi
+
+    tool_dir = Path(tool_dir)
+    output_subdir = tool_dir / "rfd3_output"
+    designs = []
+    if not output_subdir.exists():
+        return designs
+
+    for cif_gz in sorted(output_subdir.glob("*.cif.gz")):
+        try:
+            with gzip.open(str(cif_gz), "rt") as f:
+                doc = gemmi.cif.read_string(f.read())
+            st = gemmi.make_structure_from_block(doc.sole_block())
+            chains = list(st[0])
+
+            meta_path = str(cif_gz).replace(".cif.gz", ".json")
+            binder_seq = None
+
+            if len(chains) >= 2:
+                chain_sizes = [(ch, sum(1 for r in ch if r.find_atom("CA", "\0"))) for ch in chains]
+                chain_sizes.sort(key=lambda x: x[1])
+                binder_ch = chain_sizes[0][0]
+                binder_seq = "".join(
+                    gemmi.find_tabulated_residue(r.name).one_letter_code
+                    for r in binder_ch if r.find_atom("CA", "\0")
+                    and gemmi.find_tabulated_residue(r.name).one_letter_code != "?")
+            elif len(chains) == 1 and Path(meta_path).exists():
+                with open(meta_path) as mf:
+                    meta = _json.load(mf)
+                mapped_resnums = set()
+                for orig, new in meta.get("diffused_index_map", {}).items():
+                    m = re.match(r"[A-Za-z](\d+)", new)
+                    if m:
+                        mapped_resnums.add(int(m.group(1)))
+                ch = chains[0]
+                binder_residues = []
+                for r in ch:
+                    if r.find_atom("CA", "\0") and r.seqid.num not in mapped_resnums:
+                        code = gemmi.find_tabulated_residue(r.name).one_letter_code
+                        if code and code != "?":
+                            binder_residues.append(code)
+                binder_seq = "".join(binder_residues)
+
+            if not binder_seq or len(binder_seq) < 5:
+                continue
+
+            design_id = f"rfdiffusion3_{len(designs):04d}"
+            designs.append({
+                "design_id":       design_id,
+                "binder_sequence": binder_seq,
+                "backbone_pdb":    str(cif_gz),
+            })
+        except Exception:
+            continue
+
+    return designs
+
+
 COLLECTORS = {
     "rfdiffusion":       collect_rfdiffusion,
+    "rfdiffusion3":      collect_rfdiffusion3,
     "boltzgen":          collect_boltzgen,
     "bindcraft":         collect_bindcraft,
     "pxdesign":          collect_pxdesign,
