@@ -174,8 +174,9 @@
             if (match) {
                 stepEl.textContent = match[1];
                 // Show skip button for generation tools only
-                const toolName = match[1].toLowerCase().replace(/[^a-z_]/g, '');
-                const genTools = ['rfdiffusion', 'boltzgen', 'bindcraft', 'pxdesign', 'proteina', 'proteina_complexa',
+                const toolName = match[1].toLowerCase().replace(/[^a-z0-9_]/g, '');
+                const genTools = ['rfdiffusion', 'rfdiffusion3', 'boltzgen', 'bindcraft', 'bindcraft2',
+                                  'pxdesign', 'proteina', 'proteina_complexa',
                                   'pocketflow', 'molcraft', 'pocketxmol', 'pocket2mol', 'decompdiff'];
                 if (genTools.includes(toolName)) {
                     updateSkipButtons(toolName);
@@ -286,8 +287,10 @@
             const logName = toolOk[1].replace(/^\[[\d:]+\]\s*/, '');  // strip timestamp
             const nameMap = {
                 'RFdiffusion+LigandMPNN': 'rfdiffusion',
+                'RFdiffusion3': 'rfdiffusion3',
                 'BoltzGen': 'boltzgen',
                 'BindCraft': 'bindcraft',
+                'BindCraft2': 'bindcraft2',
                 'PXDesign': 'pxdesign',
                 'Proteina+LigandMPNN': 'proteina',
                 'Proteina Complexa': 'proteina_complexa',

@@ -10,6 +10,7 @@ install_proteina.sh
 WEBSERVER.md
 MSA_LOCAL.md
 RUN_COMMANDS.md
+CANONICAL.md
 
 # Python
 __pycache__/
@@ -41,3 +42,12 @@ Thumbs.db
 
 # Env files
 .env
+
+# Backups and Hydra run dirs: these hold absolute machine paths and campaign
+# names. Both were untracked AND unignored, so a single `git add -A` would have
+# published them. (One .bak was created 2026-09-29 by a config edit.)
+*.bak
+*.bak_*
+*.orig
+outputs/
+run_server.sh

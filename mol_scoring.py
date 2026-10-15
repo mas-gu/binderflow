@@ -11,6 +11,7 @@ Dependencies (boltz env): rdkit, numpy, meeko, vina (optional).
 import csv
 import logging
 import os
+import sys
 import tempfile
 import warnings
 from pathlib import Path
@@ -73,9 +74,19 @@ def compute_sa_score(mol):
     if sa is None:
         return 5.0
     try:
-        return sa.calculateScore(mol)
+        val = sa.calculateScore(mol)
     except Exception:
         return float("nan")
+    # sascorer returns None for a zero-atom molecule rather than raising, so the
+    # except above never fired. None then slipped through the `sa == sa` NaN
+    # guard downstream (None == None is True) and hit `1.0 - (None - 1.0)`,
+    # raising TypeError and destroying the ENTIRE ranking over one bad SDF
+    # record. Coerce anything non-numeric to NaN.
+    try:
+        val = float(val)
+    except (TypeError, ValueError):
+        return float("nan")
+    return val if val == val else float("nan")
 
 
 def compute_lipinski(mol):
@@ -454,11 +465,26 @@ def rank_molecules(all_mols, weights=(0.40, 0.35, 0.15, 0.10),
         # Vina artifact detection
         # Realistic range for drug-like molecules: -1 to -12 kcal/mol.
         # Outside this range = Uni-Dock artifact.
+        _missing_terms = []
         if vina != vina:  # NaN
+            # A missing measurement is NOT a score of zero. Substituting 0.0 here
+            # silently deleted the largest term (40%) from every molecule whose
+            # docking failed — and when Vina is absent from the env, that is ALL of
+            # them. Two runs on disk (23,138 and 6,157 molecules) have vina_score
+            # 0% populated and combined_score 100% populated: every one was ranked
+            # on QED+SA alone, with nothing recording that. Track it and
+            # renormalise below instead.
             vina_norm = 0.0
+            _missing_terms.append("vina")
         elif vina > -1 or vina < -12:
-            vina_norm = 0.0  # artifact — treat as undocked
+            # An artifact is an INVALID measurement, so it must be recorded as
+            # missing exactly like NaN. It was not, and this branch also rewrites
+            # entry["vina_score"] to NaN — so re-scoring the same data took the
+            # OTHER branch, which does renormalise, and the score jumped (0.41 ->
+            # 0.68) with no input change. Treat both paths identically.
+            vina_norm = 0.0
             entry["vina_score"] = float("nan")
+            _missing_terms.append("vina")
         else:
             vina_norm = max(0.0, min(1.0, -vina / 12.0))
 
@@ -469,23 +495,47 @@ def rank_molecules(all_mols, weights=(0.40, 0.35, 0.15, 0.10),
         else:
             entry["ligand_efficiency"] = float("nan")
 
-        # SA normalization
-        sa_norm = max(0.0, min(1.0, 1.0 - (sa - 1.0) / 9.0))
-        qed_val = qed_val if qed_val == qed_val else 0.0
+        # SA normalization. A NaN sa slipped through as sa_norm = 1.0 — Python's
+        # min(1.0, nan) returns 1.0 — so an unmeasured molecule scored PERFECT
+        # synthetic accessibility and outranked every real one. NaN QED had the
+        # mirror bug in the other direction (substituted 0.0, the worst score).
+        # Both are now recorded as missing and renormalised away.
+        if sa == sa:
+            sa_norm = max(0.0, min(1.0, 1.0 - (sa - 1.0) / 9.0))
+        else:
+            sa_norm = 0.0
+            _missing_terms.append("sa")
+        if qed_val != qed_val:
+            qed_val = 0.0
+            _missing_terms.append("qed")
 
         # Pocket fit — compute if pocket PDB available and docked SDF exists
         fit = entry.get("pocket_fit", float("nan"))
         if (fit != fit) and pocket_pdb:
             sdf_path = entry.get("sdf_path", "")
-            if sdf_path and os.path.exists(sdf_path):
+            # pocket_fit measures how much of the molecule sits inside the pocket,
+            # so it is only meaningful if the coordinates are in the POCKET frame.
+            # De-novo tools (PocketFlow / PocketXMol / MolCRAFT) generate there, and
+            # a docked pose is by definition there. A LIBRARY compound that never
+            # produced a docked pose still carries the origin-centred coordinates
+            # RDKit wrote at embedding time — measuring those yields a real 0.0,
+            # which then scored as "sits entirely outside the pocket" rather than
+            # "not measured", silently penalising it on 10% of the score.
+            _tool = str(entry.get("tool", "") or "")
+            _pose_in_pocket = (str(sdf_path).endswith("_docked.sdf")
+                               or not _tool.startswith("library"))
+            if sdf_path and os.path.exists(sdf_path) and _pose_in_pocket:
                 fit = compute_pocket_fit(sdf_path, pocket_pdb)
                 entry["pocket_fit"] = round(fit, 3) if fit == fit else float("nan")
+            else:
+                entry["pocket_fit"] = float("nan")
 
         # Rescale pocket_fit: 0.5-1.0 → 0-1 (makes it discriminating)
         if isinstance(fit, (int, float)) and fit == fit:
             fit_norm = max(0.0, min(1.0, (fit - 0.5) / 0.5))
         else:
             fit_norm = 0.0
+            _missing_terms.append("pocket_fit")
 
         # Boltz-2 affinity probability (0-1). NaN -> 0 contribution
         # (same pass-through convention as vina/fit).
@@ -494,14 +544,57 @@ def rank_molecules(all_mols, weights=(0.40, 0.35, 0.15, 0.10),
             prob_norm = max(0.0, min(1.0, float(prob)))
         else:
             prob_norm = 0.0
+            if w_aff:
+                _missing_terms.append("boltz_affinity")
 
-        entry["combined_score"] = (
+        _score = (
             w_vina * vina_norm +
             w_qed * qed_val +
             w_sa * sa_norm +
             w_fit * fit_norm +
             w_aff * prob_norm
         )
+        # Renormalise over the terms actually measured, so a molecule with no
+        # docking score is not silently capped below one that has it. Matches
+        # compute_combined_score() in generate_binders.py, which does the same for
+        # a missing Rosetta dG.
+        _w_missing = ((w_vina if "vina" in _missing_terms else 0.0)
+                      + (w_fit if "pocket_fit" in _missing_terms else 0.0)
+                      + (w_aff if "boltz_affinity" in _missing_terms else 0.0)
+                      + (w_sa if "sa" in _missing_terms else 0.0)
+                      + (w_qed if "qed" in _missing_terms else 0.0))
+        _w_total = w_vina + w_qed + w_sa + w_fit + w_aff
+        _w_kept = _w_total - _w_missing
+        if _missing_terms and _w_kept > 0:
+            _score *= _w_total / _w_kept
+        entry["combined_score"] = _score
+        # Recorded per molecule so a ranking can never again look complete when
+        # its dominant term was never measured.
+        entry["score_terms_missing"] = ",".join(_missing_terms)
+
+    # A run where a weighted term was never measured for ANY molecule is not a
+    # ranking, it is a different ranking wearing the same column names. Say so
+    # loudly — on stderr — rather than emitting a complete-looking CSV.
+    if all_mols:
+        import sys as _sys
+        n = len(all_mols)
+        for term, w in (("vina", w_vina), ("pocket_fit", w_fit),
+                        ("boltz_affinity", w_aff)):
+            if not w:
+                continue
+            n_missing = sum(1 for e in all_mols
+                            if term in (e.get("score_terms_missing") or ""))
+            if n_missing == n:
+                print(f"[WARNING] '{term}' ({w:.0%} of combined_score) could not be "
+                      f"measured for ANY of the {n} molecules. Scores were "
+                      f"renormalised over the remaining terms — this ranking does "
+                      f"NOT reflect {term}. For vina, check that meeko+vina are "
+                      f"importable in this env and that unidock exists.",
+                      file=_sys.stderr, flush=True)
+            elif n_missing:
+                print(f"[WARNING] '{term}' missing for {n_missing}/{n} molecules; "
+                      f"their scores were renormalised over the remaining terms.",
+                      file=_sys.stderr, flush=True)
 
     # Sort by combined score descending
     all_mols.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
@@ -509,6 +602,54 @@ def rank_molecules(all_mols, weights=(0.40, 0.35, 0.15, 0.10),
         entry["rank"] = i + 1
 
     return all_mols
+
+
+def write_mol_status_json(path, args, tool_results, all_mols, ranked, script):
+    """Machine-readable outcome for the molecule pipeline.
+
+    generate_molecules.py / rerank_molecules.py always exited 0 and never wrote a
+    status file, so a caller had no way to tell a clean run from one where every
+    tool failed — the binder scripts have had both since 2026-09-28. Mirrors that
+    schema where it makes sense.
+
+    Returns the exit code the caller should use: 0 clean, 3 nothing ranked,
+    4 partial (some tool failed but molecules were ranked).
+    """
+    import json, time
+    failed = sorted(t for t, st in (tool_results or {}).items()
+                    if not str(st).startswith("OK"))
+    missing = {}
+    for m in all_mols or []:
+        for term in str(m.get("score_terms_missing", "") or "").split(","):
+            if term:
+                missing[term] = missing.get(term, 0) + 1
+    status = {
+        "schema": 1,
+        "script": script,
+        "dry_run": bool(getattr(args, "dry_run", False)),
+        "finished_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "ok": (not failed) and bool(ranked),
+        "target": str(getattr(args, "target", "") or "") or None,
+        "site": getattr(args, "site", None),
+        "tools_requested": [t.strip() for t in
+                            str(getattr(args, "tools", "") or "").split(",") if t.strip()],
+        "tools_failed": failed,
+        "tool_results": dict(tool_results or {}),
+        "molecules_total": len(all_mols or []),
+        "molecules_ranked": len(ranked or []),
+        "top_score": (ranked[0].get("combined_score") if ranked else None),
+        "top_design_id": (ranked[0].get("design_id") if ranked else None),
+        # How many molecules were missing each weighted term. A ranking where a
+        # term is missing for everything is a different ranking than it looks.
+        "score_terms_missing": missing,
+    }
+    try:
+        Path(path).write_text(json.dumps(status, indent=2, default=str))
+    except Exception as e:
+        print(f"[status] could not write {path}: {e}", file=sys.stderr)
+    if not ranked:
+        return 3
+    return 4 if failed else 0
 
 
 def write_rankings_csv(molecules, out_path):

@@ -206,6 +206,9 @@
                         </label>
                         <div>
                             <p class="text-xs text-slate-500 mb-1">SS Bias</p>
+                            {# Browser-side filter vocabulary. NOT the CLI vocabulary —
+                               livererank.js SS_BIAS_TO_CLI maps any→balanced, sheet→beta
+                               before writing into the rerank form's ss_bias <select>. #}
                             <div class="space-y-1">
                                 <label class="flex items-center gap-1 text-xs text-slate-400 cursor-pointer">
                                     <input type="radio" name="lr_ss_bias" value="any" checked class="border-slate-600"> Any</label>
@@ -506,6 +509,6 @@
     const TOOL_METRICS = {{ tool_metrics_json | safe }};
     const JOB_SITE = {{ (job.site or "") | tojson }};
 </script>
-<script src="/static/results.js?v=6"></script>
-<script src="/static/livererank.js?v=11"></script>
+<script src="/static/results.js?v=7"></script>
+<script src="/static/livererank.js?v=12"></script>
 {% endblock %}

@@ -83,7 +83,12 @@ class ProteaFlowConfig:
         # Resolve conda env paths
         self._conda_envs = {}
         for key, val in self._raw.get("conda_envs", {}).items():
-            self._conda_envs[key] = os.path.expanduser(str(val))
+            # _expand() runs on tools: and web: but was skipped here, so a
+            # conda_envs entry written as ${software_dir}/envs/foo stayed literal
+            # and conda_run_args() passed the raw "${software_dir}/..." string
+            # straight to `conda run`.
+            self._conda_envs[key] = os.path.expanduser(
+                _expand(str(val), self._context))
 
         # Web settings
         self._web = {}
@@ -115,6 +120,40 @@ class ProteaFlowConfig:
         If it's a name, use `conda run -n`.
         """
         return self._conda_envs.get(name, name)
+
+    def conda_env_prefix(self, name: str) -> str:
+        """Absolute PREFIX PATH for a tool env, resolving a bare name if needed.
+
+        `conda_env()` may legitimately return either a name or a prefix, and
+        `conda run` handles both via `conda_run_args()`. But several callers use
+        the value as a PATH — to build `<env>/bin/<binary>`, to set CUDA_HOME, or
+        to test `Path(env).is_dir()` in --capabilities. Handed a bare name (which
+        is exactly what the shipped config.example.yaml contains, e.g.
+        `rfdiffusion3: rfdiffusion3`) those silently produced relative paths like
+        `rfdiffusion3/bin/python`, so a fresh clone looked mis-installed.
+
+        Resolves via `conda env list`, cached. Returns "" if it cannot be found,
+        which callers already treat as unavailable.
+        """
+        env = self.conda_env(name)
+        if not env:
+            return ""
+        if os.path.isabs(env):
+            return env
+        cache = getattr(self, "_env_prefix_cache", None)
+        if cache is None:
+            cache = {}
+            try:
+                import subprocess, json as _json
+                out = subprocess.run(["conda", "env", "list", "--json"],
+                                     capture_output=True, text=True, timeout=30)
+                if out.returncode == 0:
+                    for p in _json.loads(out.stdout).get("envs", []):
+                        cache[os.path.basename(p)] = p
+            except Exception:
+                pass
+            self._env_prefix_cache = cache
+        return cache.get(env, "")
 
     def conda_run_args(self, name: str) -> list:
         """Build conda run prefix args for a tool env.

@@ -229,11 +229,19 @@ def apply_filters(molecules, min_qed=None, max_sa=None, min_pocket_fit=None,
         mw_min, mw_max = mw_range
         _filter("mw", lambda v: mw_min <= v <= mw_max, f"MW {mw_min}-{mw_max}")
 
+    # Numeric bounds on the score, matching the web UI's own client-side filter
+    # (results_mol.html: keep v >= min_vina and v <= max_vina). Both comparisons
+    # used to be reversed, so the two flags were mutually exclusive — nothing can
+    # be both <= -10 and >= -3, and `--min_vina -10 --max_vina -3` always returned
+    # zero molecules. Worse, the UI passes these straight through to this CLI, so
+    # a rerank filtered the OPPOSITE way round from the table the user was looking
+    # at. Vina is negative and more negative is better, so min_vina is the
+    # strongest score kept and max_vina the weakest.
     if min_vina is not None:
-        _filter("vina_score", lambda v: v <= min_vina, f"min_vina <= {min_vina}")
+        _filter("vina_score", lambda v: v >= min_vina, f"vina >= {min_vina}")
 
     if max_vina is not None:
-        _filter("vina_score", lambda v: v >= max_vina, f"max_vina >= {max_vina}")
+        _filter("vina_score", lambda v: v <= max_vina, f"vina <= {max_vina}")
 
     n_removed = n_start - len(molecules)
     return molecules, log_lines, n_removed
@@ -280,9 +288,12 @@ Examples:
     parser.add_argument("--mw_range", default=None,
                         help='MW range, e.g. "150,600"')
     parser.add_argument("--min_vina", type=float, default=None,
-                        help="Min (most negative) Vina score, e.g. -10")
+                        help="Lower bound on Vina score (keeps vina >= this). "
+                             "Vina is negative and more negative is better, so this "
+                             "is the STRONGEST score kept, e.g. -12.")
     parser.add_argument("--max_vina", type=float, default=None,
-                        help="Max (least negative) Vina score, e.g. -3")
+                        help="Upper bound on Vina score (keeps vina <= this) — the "
+                             "WEAKEST score kept, e.g. -7. Use both for a band.")
 
     # ── Boltz-2 affinity rescoring ───────────────────────────────────────
     parser.add_argument("--boltz_affinity", action="store_true",
@@ -409,8 +420,11 @@ Examples:
     log(f"\nCollected: {len(all_mols)} unique molecules ({n_dupes} duplicates removed)")
 
     if not all_mols:
-        log("No molecules found. Exiting.")
-        return
+        log("No molecules found. Exiting.", err=True)
+        from mol_scoring import write_mol_status_json
+        sys.exit(write_mol_status_json(Path(out_dir) / "status.json", args,
+                                       {"rerank": "FAILED: no molecules found"},
+                                       [], [], "rerank_molecules.py"))
 
     # ── Recompute pocket_fit ─────────────────────────────────────────────
     log(f"\n{'─' * 50}")
@@ -420,7 +434,16 @@ Examples:
     n_fit = 0
     for i, m in enumerate(all_mols):
         sdf_path = m.get("sdf_path", "")
-        if sdf_path and os.path.exists(sdf_path):
+        # Same guard mol_scoring uses: pocket_fit only means anything if the
+        # coordinates are in the POCKET frame. A library compound that never
+        # produced a docked pose still carries RDKit's origin-centred embedding,
+        # so measuring it returns a real 0.0 ("entirely outside the pocket")
+        # instead of NaN — silently penalising 10% of the score. This guard was
+        # added to mol_scoring and never ported here.
+        _tool = str(m.get("tool", "") or "")
+        _pose_in_pocket = (str(sdf_path).endswith("_docked.sdf")
+                           or not _tool.startswith("library"))
+        if sdf_path and os.path.exists(sdf_path) and _pose_in_pocket:
             fit = compute_pocket_fit(sdf_path, pocket_pdb)
             m["pocket_fit"] = round(fit, 3) if fit == fit else float("nan")
             if fit == fit:
@@ -458,8 +481,11 @@ Examples:
         log(f"  Total removed: {n_removed}, remaining: {len(all_mols)}")
 
     if not all_mols:
-        log("All molecules filtered out. Exiting.")
-        return
+        log("All molecules filtered out. Exiting.", err=True)
+        from mol_scoring import write_mol_status_json
+        sys.exit(write_mol_status_json(Path(out_dir) / "status.json", args,
+                                       {"rerank": "OK (all molecules filtered out)"},
+                                       [], [], "rerank_molecules.py"))
 
     # ── Initial rank ─────────────────────────────────────────────────────
     # If Boltz-2 affinity is enabled, we rank once (without affinity) to
@@ -566,6 +592,15 @@ Examples:
     log(f"  rankings.csv    — {len(ranked)} molecules")
     log(f"  top_molecules/  — top {min(args.top_n, len(ranked))} SDFs + SMILES")
     log(f"  dashboard.png   — summary plot")
+
+    # Machine-readable outcome + real exit code, matching generate_molecules.py
+    # and the binder scripts. This used to always exit 0 with no status file.
+    from mol_scoring import write_mol_status_json
+    _rc = write_mol_status_json(Path(out_dir) / "status.json", args,
+                                {"rerank": "OK"}, all_mols, ranked,
+                                "rerank_molecules.py")
+    log(f"  status.json     — machine-readable run outcome (exit {_rc})")
+    sys.exit(_rc)
 
 
 if __name__ == "__main__":

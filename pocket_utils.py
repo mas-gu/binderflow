@@ -12,6 +12,7 @@ operate on a flat list of ``(chain_id, resnum)`` pairs returned by
 """
 
 import re
+import sys
 import numpy as np
 from pathlib import Path
 
@@ -128,6 +129,12 @@ def _site_atoms(model, site_pairs):
     for chain_id, resnums in by_chain.items():
         chain = model[chain_id]
         for res in chain:
+            # Standard residues only. A HETATM (ion, water, ligand) that happens
+            # to share a site residue NUMBER was silently pulled into the pocket,
+            # shifting the centroid and inflating the bounding box — a
+            # co-crystallised ion sitting near the epitope is the common case.
+            if res.id[0] != " ":
+                continue
             if res.id[1] in resnums:
                 atoms.extend(res.get_atoms())
     if not atoms:
@@ -152,8 +159,8 @@ def _site_ca_coords(model, site_pairs):
             raise ValueError(f"Chain {chain_id} not found")
         chain = model[chain_id]
         for res in chain:
-            if res.id[1] not in resnums:
-                continue
+            if res.id[0] != " " or res.id[1] not in resnums:
+                continue  # standard residues only — see _site_atoms
             if "CA" in res:
                 coords.append(res["CA"].get_vector().get_array())
             else:
@@ -165,6 +172,25 @@ def _site_ca_coords(model, site_pairs):
     if not coords:
         raise ValueError(
             f"No Cα atoms found for site residues {site_pairs}")
+
+    # A PARTIAL match was silent: only a completely absent site raised. With, say,
+    # half the residues missing (wrong numbering frame, a truncated construct),
+    # the centroid and bbox are computed from the surviving subset and look
+    # entirely plausible — so the pocket is confidently placed in the wrong spot.
+    found = set()
+    for chain_id, resnums in by_chain.items():
+        if chain_id in [c.id for c in model]:
+            for res in model[chain_id]:
+                if res.id[1] in resnums:
+                    found.add((chain_id, res.id[1]))
+    missing = [p for p in site_pairs if tuple(p) not in found]
+    if missing:
+        print(f"WARNING: {len(missing)}/{len(site_pairs)} site residues are not in "
+              f"the target and were ignored when placing the pocket: "
+              f"{', '.join(f'{c}:{r}' for c, r in missing[:12])}"
+              f"{' ...' if len(missing) > 12 else ''}. The pocket centre and box "
+              f"come from the remaining {len(found)} residues only — check your "
+              f"--site numbering against the target.", file=sys.stderr, flush=True)
     return np.array(coords)
 
 

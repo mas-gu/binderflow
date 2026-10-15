@@ -121,7 +121,12 @@ class ToolComparison(QWidget):
             self.canvas.draw()
             return
 
-        bp = ax.boxplot(data, labels=labels, patch_artist=True, widths=0.6)
+        # `labels=` was removed in matplotlib 3.11; `tick_labels=` replaces it.
+        # Try the new name first so the Tools tab keeps working on both.
+        try:
+            bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6)
+        except TypeError:
+            bp = ax.boxplot(data, labels=labels, patch_artist=True, widths=0.6)
         for patch, color in zip(bp["boxes"], colors):
             patch.set_facecolor(color)
             patch.set_alpha(0.6)

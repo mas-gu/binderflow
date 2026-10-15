@@ -8,9 +8,49 @@ from pathlib import Path
 
 from . import database
 from .config import PIPELINE_SCRIPT, RERANK_SCRIPT, MOLECULE_SCRIPT, RERANK_MOLECULE_SCRIPT, PROJECT_ROOT, PYTHON_BIN
+import logging
+
+log = logging.getLogger(__name__)
 
 
 _processes: dict[str, "asyncio.subprocess.Process"] = {}
+
+# Valid --ss_bias choices, mirrored from generate_binders.py / rerank_binders.py
+# argparse (choices=["beta", "helix", "balanced"]). Anything else (notably the
+# empty string produced when a UI filter value like "any"/"sheet" is assigned
+# into the rerank <select>) would make argparse exit rc=2.
+SS_BIAS_CHOICES = ("beta", "helix", "balanced")
+SS_BIAS_DEFAULT = "balanced"
+# Browser-side SS *filter* words that are not CLI choices (mirrors
+# livererank.js SS_BIAS_TO_CLI) — accepted here so a direct API POST keeps
+# the intended meaning instead of silently falling back to the default.
+SS_BIAS_ALIASES = {"any": "balanced", "sheet": "beta"}
+
+
+def _num_arg(params: dict, key: str) -> str | None:
+    """Return the stringified value of a numeric param, or None if unset.
+
+    A plain ``if params.get(key):`` test silently drops legitimate zeros, so
+    ``--plip_top 0`` ("set to 0 to disable") and ``--max_site_dist 0``
+    ("0=disable filter") were unreachable from the web UI. Only None and
+    blank strings count as "not supplied".
+    """
+    val = params.get(key)
+    if val is None:
+        return None
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+    return str(val)
+
+
+def _ss_bias(params: dict) -> str:
+    """Return a valid --ss_bias value, falling back to the default."""
+    val = params.get("ss_bias")
+    val = val.strip().lower() if isinstance(val, str) else val
+    val = SS_BIAS_ALIASES.get(val, val)
+    return val if val in SS_BIAS_CHOICES else SS_BIAS_DEFAULT
 
 
 def build_generate_cmd(params: dict) -> list[str]:
@@ -24,7 +64,7 @@ def build_generate_cmd(params: dict) -> list[str]:
         "--mode", params["mode"],
         "--out_dir", params["out_dir"],
         "--score_weights", params.get("score_weights", "0.3,0.6,0.1"),
-        "--ss_bias", params.get("ss_bias", "balanced"),
+        "--ss_bias", _ss_bias(params),
     ]
     if params.get("reprediction"):
         cmd.append("--reprediction")
@@ -32,21 +72,21 @@ def build_generate_cmd(params: dict) -> list[str]:
         cmd.extend(["--n_tag", params["n_tag"]])
     if params.get("c_tag"):
         cmd.extend(["--c_tag", params["c_tag"]])
-    if params.get("plip_top"):
-        cmd.extend(["--plip_top", str(params["plip_top"])])
-    if params.get("esmfold_plddt_threshold"):
-        cmd.extend(["--esmfold_plddt_threshold", str(params["esmfold_plddt_threshold"])])
-    if params.get("top_n"):
-        cmd.extend(["--top_n", str(params["top_n"])])
-    if params.get("max_site_dist"):
-        cmd.extend(["--max_site_dist", str(params["max_site_dist"])])
-    if params.get("min_site_fraction"):
-        cmd.extend(["--min_site_fraction", str(params["min_site_fraction"])])
-    if params.get("filter_site_pae"):
-        cmd.extend(["--filter_site_pae", str(params["filter_site_pae"])])
+    # Numeric params: 0 / 0.0 are meaningful values, not "unset".
+    for key in ("plip_top", "esmfold_plddt_threshold", "top_n",
+                "max_site_dist", "min_site_fraction", "filter_site_pae"):
+        val = _num_arg(params, key)
+        if val is not None:
+            cmd.extend([f"--{key}", val])
     bf = params.get("bindcraft_filters", "no_filters")
     if bf and bf != "no_filters":
         cmd.extend(["--bindcraft_filters", bf])
+    bf2 = params.get("bindcraft2_filters", "no_filters")
+    if bf2 and bf2 != "no_filters":
+        cmd.extend(["--bindcraft2_filters", bf2])
+    mod2 = params.get("bindcraft2_modality", "binder")
+    if mod2 and mod2 != "binder":
+        cmd.extend(["--bindcraft2_modality", mod2])
     return cmd
 
 
@@ -58,30 +98,22 @@ def build_rerank_cmd(params: dict) -> list[str]:
         "--site", params["site"],
         "--out_dir", params["out_dir"],
         "--score_weights", params.get("score_weights", "0.3,0.6,0.1"),
-        "--ss_bias", params.get("ss_bias", "balanced"),
+        "--ss_bias", _ss_bias(params),
     ]
     if not params.get("reprediction"):
         cmd.append("--rank_only")
     if params.get("results_dir"):
         cmd.extend(["--results_dir", params["results_dir"]])
-    if params.get("plip_top"):
-        cmd.extend(["--plip_top", str(params["plip_top"])])
     if params.get("no_cys"):
         cmd.append("--no_cys")
-    if params.get("max_aa_fraction"):
-        cmd.extend(["--max_aa_fraction", str(params["max_aa_fraction"])])
-    if params.get("min_sc"):
-        cmd.extend(["--min_sc", str(params["min_sc"])])
-    if params.get("max_refolding_rmsd"):
-        cmd.extend(["--max_refolding_rmsd", str(params["max_refolding_rmsd"])])
-    if params.get("min_site_interface_fraction"):
-        cmd.extend(["--min_site_interface_fraction", str(params["min_site_interface_fraction"])])
-    if params.get("max_site_dist"):
-        cmd.extend(["--max_site_dist", str(params["max_site_dist"])])
-    if params.get("min_site_fraction"):
-        cmd.extend(["--min_site_fraction", str(params["min_site_fraction"])])
-    if params.get("max_interface_ke"):
-        cmd.extend(["--max_interface_ke", str(params["max_interface_ke"])])
+    # Numeric params: 0 / 0.0 are meaningful values, not "unset".
+    for key in ("plip_top", "max_aa_fraction", "min_sc", "max_refolding_rmsd",
+                "min_site_interface_fraction", "max_site_dist",
+                "min_site_fraction", "max_interface_ke",
+                "esmfold_plddt_threshold", "top_n"):
+        val = _num_arg(params, key)
+        if val is not None:
+            cmd.extend([f"--{key}", val])
     if params.get("reprediction"):
         cmd.append("--reprediction")
         # Remove --rank_only if it was added (shouldn't be, but safety check)
@@ -91,10 +123,6 @@ def build_rerank_cmd(params: dict) -> list[str]:
         cmd.extend(["--n_tag", params["n_tag"]])
     if params.get("c_tag"):
         cmd.extend(["--c_tag", params["c_tag"]])
-    if params.get("esmfold_plddt_threshold"):
-        cmd.extend(["--esmfold_plddt_threshold", str(params["esmfold_plddt_threshold"])])
-    if params.get("top_n"):
-        cmd.extend(["--top_n", str(params["top_n"])])
     return cmd
 
 
@@ -134,8 +162,17 @@ def build_mol_rerank_cmd(params: dict) -> list[str]:
         "--site", params["site"],
         "--out_dir", params["out_dir"],
     ]
-    if params.get("results_dir"):
-        cmd += ["--results_dir", params["results_dir"]]
+    # rerank_molecules.py declares --results_dir required=True (unlike
+    # rerank_binders.py, where it is optional and means "rerank in place"), so
+    # the conditional below would launch a job that dies instantly with an
+    # argparse usage dump and rc=2. The web form marks the field required, but
+    # the API accepts an empty string, so a direct API call still reaches here.
+    # Fail with something a caller can act on instead.
+    if not params.get("results_dir"):
+        raise ValueError(
+            "mol_rerank requires results_dir — rerank_molecules.py cannot "
+            "rerank in place (its binder counterpart can).")
+    cmd += ["--results_dir", params["results_dir"]]
     if params.get("score_weights"):
         cmd += ["--score_weights", params["score_weights"]]
     if params.get("pocket_dist"):
@@ -167,6 +204,33 @@ def build_mol_rerank_cmd(params: dict) -> list[str]:
     return cmd
 
 
+def _rotate_log(log_path: str) -> str | None:
+    """Move an existing log aside so a re-run cannot destroy it.
+
+    ``log_file`` is the deterministic ``{out_dir}/run.log``, so re-submitting
+    the same job name on the same day (or re-running a rerank into an existing
+    results dir) used to truncate the very log needed to diagnose the previous
+    attempt. The old log is renamed to ``run.log.<YYYYmmdd-HHMMSS>`` and the
+    fresh run then starts from an empty file (keeps the SSE tailer simple).
+
+    Returns the archived path, or None if there was nothing to rotate.
+    """
+    p = Path(log_path)
+    try:
+        if not p.is_file() or p.stat().st_size == 0:
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(p.stat().st_mtime))
+        archived = p.with_name(f"{p.name}.{stamp}")
+        n = 1
+        while archived.exists():
+            archived = p.with_name(f"{p.name}.{stamp}.{n}")
+            n += 1
+        p.rename(archived)
+        return str(archived)
+    except OSError:
+        return None
+
+
 async def launch_job(job_id: str, params: dict, gpu_id: int):
     """Start a pipeline subprocess."""
     job_type = params.get("job_type", "generate")
@@ -181,6 +245,7 @@ async def launch_job(job_id: str, params: dict, gpu_id: int):
 
     log_path = params["log_file"]
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    _rotate_log(log_path)
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -226,6 +291,20 @@ async def _wait_for_job(job_id: str, proc, log_fh):
         except Exception:
             error_msg = f"Exit code {returncode}"
 
+    # Do not clobber a terminal status someone else already set. cancel_job()
+    # writes status="cancelled" and then the process dies, so this task ran a
+    # moment later and unconditionally overwrote it with "failed" — a cancelled
+    # job reported as a failure. Re-read before writing.
+    try:
+        _cur = await database.get_job(job_id)
+        _cur_status = (_cur or {}).get("status")
+    except Exception:
+        _cur_status = None
+    if _cur_status in ("cancelled", "completed"):
+        log.info("_wait_for_job(%s): status already %r — not overwriting with %r",
+                 job_id, _cur_status, status)
+        return
+
     await database.update_job(
         job_id,
         status=status,
@@ -256,6 +335,34 @@ def _get_all_descendants(pid: int) -> list[int]:
     return descendants
 
 
+def pid_matches_job(pid: int, job) -> bool:
+    """Is `pid` really THIS job's pipeline, or has the PID been recycled?
+
+    A PID recovered from the database after a server restart is just an integer.
+    Linux recycles PIDs, so on a long-lived box (or after a reboot) that integer
+    can belong to something else entirely — and cancel_job() SIGKILLs the whole
+    process GROUP, so a wrong match kills an unrelated process tree, potentially
+    the user's own shell.
+
+    Every job has a unique out_dir (there is a UNIQUE index on it), and the
+    pipeline is always launched with it on the command line, so it is a reliable
+    identity token. Fails CLOSED: if we cannot read /proc or cannot see the
+    out_dir, we refuse to claim the PID is ours.
+    """
+    try:
+        out_dir = (job or {}).get("out_dir") or ""
+    except Exception:
+        return False
+    if not out_dir:
+        return False
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as fh:
+            cmdline = fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return False
+    return str(out_dir).rstrip("/") in cmdline
+
+
 async def cancel_job(job_id: str) -> bool:
     """Cancel a running job.
 
@@ -272,7 +379,19 @@ async def cancel_job(job_id: str) -> bool:
     if pid is None:
         job = await database.get_job(job_id)
         if job and job["status"] == "running" and job.get("pid"):
-            pid = job["pid"]
+            # Verify identity before trusting a bare integer from the DB — see
+            # pid_matches_job. Without this a recycled PID gets its whole process
+            # group SIGKILLed.
+            if pid_matches_job(job["pid"], job):
+                pid = job["pid"]
+            else:
+                log.warning(
+                    "cancel_job(%s): stored PID %s is not this job (recycled or "
+                    "already gone) — refusing to kill it; marking job failed",
+                    job_id, job["pid"])
+                await database.update_job(job_id, status="failed", exit_code=-1,
+                                          error_msg="Process no longer exists (stale PID)")
+                return True
 
     if pid is None:
         return False

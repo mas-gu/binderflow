@@ -198,7 +198,8 @@ async def list_projects() -> list[str]:
 
 async def list_all_jobs(status: str | None = None, limit: int = 100,
                         username: str | None = None, project: str | None = None,
-                        include_archived: bool = False) -> list[dict]:
+                        include_archived: bool = False,
+                        job_types: list[str] | None = None) -> list[dict]:
     """List jobs from ALL machines (read-only cross-machine query)."""
     all_jobs = []
     for db_path in _iter_all_dbs():
@@ -218,6 +219,15 @@ async def list_all_jobs(status: str | None = None, limit: int = 100,
                 if project:
                     conditions.append("project = ?")
                     params.append(project)
+                # Filter job_type in SQL so LIMIT applies to the rows the caller
+                # actually wants. The rerank page asked for the 100 newest
+                # COMPLETED jobs and then filtered to generate/molecule in
+                # Python — so reranks and failed runs consumed the 100 slots and
+                # older rerankable jobs silently vanished from the dropdown.
+                if job_types:
+                    conditions.append("job_type IN (%s)"
+                                      % ",".join("?" for _ in job_types))
+                    params.extend(job_types)
                 where = " AND ".join(conditions)
                 query = "SELECT * FROM jobs"
                 if where:

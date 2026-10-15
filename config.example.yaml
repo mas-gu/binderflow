@@ -19,6 +19,11 @@ tools:
   ligandmpnn_dir: ${software_dir}/LigandMPNN
   ligandmpnn_ckpt: ${weights_dir}/ligandmpnn/proteinmpnn_v_48_020.pt
   bindcraft_dir: ${software_dir}/BindCraft
+  netsolp_dir: ${software_dir}/NetSolP-1.0/PredictionServer
+  bindcraft2_dir: ${software_dir}/BindCraft2
+  # BC2 reads AlphaFold params from $BINDCRAFT_WEIGHTS/alphafold; without this
+  # it re-downloads 5.3 GB into ~/.cache/bindcraft on the home partition.
+  bindcraft2_weights: ${weights_dir}/bindcraft2
   pxdesign_dir: ${software_dir}/PXDesign
   proteina_dir: ${software_dir}/Proteina
   proteina_ckpt: ${weights_dir}/proteina/proteina_v1.1_DFS_200M_tri.ckpt
@@ -48,3 +53,7 @@ conda_envs:
 web:
   outputs_dir: ./outputs                 # Job output base directory
   shared_data_dir: ./data                # SQLite DBs, uploads, shared.json
+  outputs_mol_dir: ./outputs_mol         # Molecule-pipeline job outputs
+  libraries_dir: ./libraries             # Compound libraries (.smi/.sdf) offered in the web UI.
+                                         # Read with no default, so leaving it out makes the
+                                         # library picker silently empty.

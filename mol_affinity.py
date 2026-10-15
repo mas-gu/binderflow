@@ -89,6 +89,17 @@ def _smiles_passes_affinity_domain(smiles):
     return True, ""
 
 
+def _msa_query_seq(path):
+    """Query (row 0) sequence of a Boltz MSA csv, or "" if unreadable."""
+    try:
+        lines = Path(path).read_text().splitlines()
+        if len(lines) < 2:
+            return ""
+        return lines[1].split(",")[-1].strip().upper()
+    except Exception:
+        return ""
+
+
 def precompute_target_msa(target_seq, affinity_dir, chain_tag=None):
     """Compute target MSA once via a dummy Boltz-2 prediction.
 
@@ -115,9 +126,10 @@ def precompute_target_msa(target_seq, affinity_dir, chain_tag=None):
     if chain_tag and legacy.exists() and legacy.stat().st_size > 0 and not msa_path.exists():
         # Only adopt if the cached MSA matches our target chain length.
         try:
-            first_line = legacy.read_text().splitlines()[1]  # header + first row
-            cached_seq = first_line.split(",")[-1].strip()
-            if len(cached_seq) == len(target_seq):
+            cached_seq = _msa_query_seq(legacy)
+            # Exact sequence, not just length: two different proteins of the same
+            # length would silently share an MSA.
+            if cached_seq and cached_seq == str(target_seq).strip().upper():
                 import shutil
                 shutil.copy2(legacy, msa_path)
                 log(f"  Affinity: reusing legacy target MSA for chain {chain_tag}")
@@ -125,16 +137,27 @@ def precompute_target_msa(target_seq, affinity_dir, chain_tag=None):
         except Exception:
             pass
 
-    # Check if a previous run nearby already produced an MSA we can reuse
+    # Check if a previous run nearby already produced an MSA we can reuse.
+    # This used to copy the FIRST match with no sequence check whatsoever, while
+    # globbing two directories up — so a campaign run beside a different target
+    # silently adopted that target's MSA, and every affinity prediction after it
+    # was computed against the wrong protein with nothing in the log to say so.
+    # Adopt only on an exact query-sequence match.
+    _want = str(target_seq).strip().upper()
     for parent in [affinity_dir.parent, affinity_dir.parent.parent]:
         existing = list(parent.rglob(f"target_msa{suffix}.csv"))
         existing += list(parent.rglob("boltz_results_batch_inputs/msa/*_0.csv"))
         existing = [p for p in existing if p.stat().st_size > 0]
+        n_seen = len(existing)
+        existing = [p for p in existing if _msa_query_seq(p) == _want]
         if existing:
             import shutil
             shutil.copy2(existing[0], msa_path)
-            log(f"  Affinity: reusing target MSA from {existing[0]}")
+            log(f"  Affinity: reusing target MSA from {existing[0]} (sequence verified)")
             return msa_path
+        if n_seen:
+            log(f"  Affinity: found {n_seen} nearby MSA file(s) under {parent} but none "
+                f"matches this target's sequence — computing a fresh one.")
 
     tag_str = f" chain {chain_tag}" if chain_tag else ""
     log(f"  Affinity: computing target MSA{tag_str} (one-time)...")

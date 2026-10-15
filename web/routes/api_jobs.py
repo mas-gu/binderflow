@@ -12,7 +12,7 @@ from fastapi import APIRouter, Form, UploadFile, File, HTTPException, Request
 from .. import database
 from ..config import (
     UPLOADS_DIR, SCRATCH_UPLOADS_DIR, OUTPUTS_BASE,
-    MOLECULE_OUTPUTS_BASE, MOLECULE_TOOLS,
+    MOLECULE_OUTPUTS_BASE, MOLECULE_TOOLS, DEFAULT_TOOLS,
 )
 from ..gpu import query_gpus, invalidate_cache
 from .. import job_runner
@@ -22,6 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pocket_utils import parse_site_multichain, site_pairs_chains  # noqa: E402
 
 router = APIRouter(prefix="/api", tags=["jobs"])
+
+# Fallback tool set for a POST that omits "tools". Kept in sync with
+# config.DEFAULT_TOOLS (== generate_binders.ALL_TOOLS) so an omitted
+# field can no longer silently drop rfdiffusion3 / bindcraft2.
+DEFAULT_TOOLS_CSV = ",".join(DEFAULT_TOOLS)
 
 
 def _sanitize_name(name: str) -> str:
@@ -39,7 +44,7 @@ async def create_job(
     target_token: str = Form(""),
     site: str = Form(...),
     length: str = Form("60-80"),
-    tools: str = Form("rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa"),
+    tools: str = Form(DEFAULT_TOOLS_CSV),
     mode: str = Form("test"),
     gpu_id: int = Form(...),
     ss_bias: str = Form("balanced"),
@@ -60,6 +65,8 @@ async def create_job(
     out_dir_override: str = Form(""),
     max_interface_ke: float = Form(None),
     bindcraft_filters: str = Form("no_filters"),
+    bindcraft2_filters: str = Form("no_filters"),
+    bindcraft2_modality: str = Form("binder"),
     n_tag: str = Form(""),
     c_tag: str = Form(""),
     # Molecule-specific params (optional, only used when job_type="molecule")
@@ -84,6 +91,14 @@ async def create_job(
         (job_type == "rerank" and not reprediction)
         or (job_type == "mol_rerank" and not boltz_affinity)
     )
+    # rerank_molecules.py requires --results_dir (its binder twin does not), so
+    # reject here — BEFORE the job row is created — rather than letting the
+    # subprocess die with an argparse usage dump and leaving an orphaned job.
+    if job_type == "mol_rerank" and not results_dir.strip():
+        raise HTTPException(
+            400, "results_dir is required for a molecule rerank "
+                 "(rerank_molecules.py cannot rerank in place).")
+
     if not is_rerank_no_gpu:
         gpus = query_gpus()
         gpu = next((g for g in gpus if g.index == gpu_id), None)
@@ -209,6 +224,8 @@ async def create_job(
         "max_interface_ke": max_interface_ke,
         "top_n": top_n,
         "bindcraft_filters": bindcraft_filters,
+        "bindcraft2_filters": bindcraft2_filters,
+        "bindcraft2_modality": bindcraft2_modality,
         "out_dir": out_dir,
         "log_file": log_file,
         "results_dir": results_dir,
@@ -320,7 +337,7 @@ async def skip_tool(job_id: str, tool: str):
     terminates the running subprocess when found. Only affects the
     current generation step — validation steps are not skippable.
     """
-    VALID_TOOLS = {"rfdiffusion", "boltzgen", "bindcraft", "pxdesign",
+    VALID_TOOLS = {"rfdiffusion", "rfdiffusion3", "boltzgen", "bindcraft", "bindcraft2", "pxdesign",
                    "proteina", "proteina_complexa",
                    "pocketflow", "molcraft", "pocketxmol", "pocket2mol", "decompdiff"}
     if tool not in VALID_TOOLS:

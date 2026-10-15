@@ -865,10 +865,13 @@ function initRerankForm() {
         formData.append('target_path', form.target_path.value);
         formData.append('site', form.site.value);
         formData.append('length', '60-80');
-        formData.append('tools', 'rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa');
+        formData.append('tools', 'rfdiffusion,rfdiffusion3,boltzgen,bindcraft,bindcraft2,pxdesign,proteina,proteina_complexa');
         formData.append('mode', 'test');
         formData.append('score_weights', form.score_weights.value);
-        formData.append('ss_bias', form.ss_bias.value);
+        // Guard: a <select> assigned an out-of-vocabulary value (e.g. the
+        // live-filter 'any'/'sheet') reports '' — never ship that to
+        // argparse choices=["beta","helix","balanced"] (exits rc=2).
+        formData.append('ss_bias', form.ss_bias.value || 'balanced');
         formData.append('plip_top', form.plip_top.value || '10');
         formData.append('top_n', '50');
         formData.append('results_dir', resultsDir);
@@ -916,7 +919,7 @@ function initRerankForm() {
         parts.push('--out_dir ' + form.results_dir.value + '/reranked_' + form.rr_suffix.value);
         parts.push('--rank_only');
         parts.push('--score_weights ' + form.score_weights.value);
-        parts.push('--ss_bias ' + form.ss_bias.value);
+        parts.push('--ss_bias ' + (form.ss_bias.value || 'balanced'));
         if (form.no_cys.checked) parts.push('--no_cys');
         ['max_aa_fraction', 'min_sc', 'max_refolding_rmsd', 'max_interface_ke',
          'min_site_interface_fraction', 'max_site_dist', 'min_site_fraction'].forEach(f => {

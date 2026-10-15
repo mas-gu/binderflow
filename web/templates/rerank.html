@@ -570,14 +570,18 @@
             });
         } else {
             // Binder rerank
-            const outDir = resultsDir + '/reranked_' + suffix;
+            // Multi-dir rerank passes a COMMA-SEPARATED results_dir, so this
+            // built "/a,/b/reranked_x" — a path that does not exist and whose
+            // results landed in a garbage nested directory. The molecule branch
+            // above already takes the first dir; this one did not.
+            const outDir = resultsDir.split(',')[0].trim() + '/reranked_' + suffix;
             formData.append('out_dir_override', outDir);
             formData.append('score_weights', form.elements['score_weights'].value);
-            formData.append('ss_bias', form.ss_bias.value);
+            formData.append('ss_bias', form.ss_bias.value || 'balanced');
             formData.append('plip_top', form.plip_top?.value || '10');
             formData.append('top_n', '50');
             formData.append('length', '60-80');
-            formData.append('tools', 'rfdiffusion,boltzgen,bindcraft,pxdesign,proteina,proteina_complexa');
+            formData.append('tools', 'rfdiffusion,rfdiffusion3,boltzgen,bindcraft,bindcraft2,pxdesign,proteina,proteina_complexa');
             formData.append('mode', 'test');
             const repred = document.getElementById('reprediction_cb')?.checked || false;
             formData.append('reprediction', repred);

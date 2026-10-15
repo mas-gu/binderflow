@@ -23,44 +23,18 @@ from .. import database
 
 
 async def _check_stale_jobs():
-    """Check running jobs for dead PIDs and mark as completed/failed.
+    """Mark jobs whose process is gone as failed/completed.
 
-    Lightweight — runs on every dashboard load. Only checks local machine jobs.
+    Delegates to app._cleanup_stale_jobs rather than keeping a second copy. The
+    copy that used to live here had drifted: it marked a crashed run "completed"
+    on the bare EXISTENCE of rankings.csv, which is always true for a rerank
+    (it runs into a directory that already has one from the original run), and
+    it trusted a raw PID with no identity check. The import is deferred because
+    app imports this module.
     """
-    jobs = await database.list_jobs(status="running")
-    for job in jobs:
-        pid = job.get("pid")
-        if not pid:
-            continue
-        # Check if PID is alive
-        try:
-            os.kill(pid, 0)
-            continue  # alive — skip
-        except (OSError, ProcessLookupError):
-            pass  # dead — check if completed
+    from ..app import _cleanup_stale_jobs
+    await _cleanup_stale_jobs()
 
-        out_dir = job.get("out_dir", "")
-        if out_dir and (Path(out_dir) / "rankings.csv").exists():
-            status = "completed"
-        else:
-            log_file = job.get("log_file", "")
-            status = "failed"
-            if log_file and os.path.exists(log_file):
-                try:
-                    with open(log_file) as f:
-                        tail = f.readlines()[-10:]
-                    if any(m in line for line in tail
-                           for m in ("DONE", "dashboard.png", "rankings.csv",
-                                     "summary plot", "total designs")):
-                        status = "completed"
-                except Exception:
-                    pass
-
-        await database.update_job(
-            job["id"], status=status,
-            exit_code=0 if status == "completed" else -1,
-            error_msg="Recovered (stale PID)" if status == "failed" else None,
-        )
 
 router = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -220,9 +194,10 @@ def _resolve_target_for_rerank(job: dict) -> str:
 async def rerank_page(request: Request, results_dir: str = "", type: str = ""):
     gpus = query_gpus()
     running = await database.list_jobs(status="running")
-    all_completed = await database.list_all_jobs(status="completed")
-    completed_jobs = [j for j in all_completed
-                      if j.get("job_type") in ("generate", "molecule")]
+    # Filter in SQL, not after the LIMIT — otherwise non-rerankable jobs eat the
+    # 100 slots and older generate/molecule runs disappear from the dropdown.
+    completed_jobs = await database.list_all_jobs(
+        status="completed", job_types=["generate", "molecule"], limit=200)
     # Resolve each completed job's target to a path that lives inside its
     # out_dir on Colossus (cross-machine readable) when possible.
     for j in completed_jobs:

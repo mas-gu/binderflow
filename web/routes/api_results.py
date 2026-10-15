@@ -7,7 +7,15 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from .. import database
-from binders_pipeline_env.binder_browser.data.loader import load_rankings
+try:
+    from binders_pipeline_env.binder_browser.data.loader import load_rankings
+except ImportError:  # repo cloned under a different directory name
+    import sys as _sys
+    from pathlib import Path as _Path
+    _pkg = _Path(__file__).resolve().parents[2]
+    if str(_pkg) not in _sys.path:
+        _sys.path.insert(0, str(_pkg))
+    from binder_browser.data.loader import load_rankings
 
 router = APIRouter(prefix="/api/results", tags=["results"])
 
@@ -401,24 +409,33 @@ async def get_plip_summary(job_id: str):
 
 
 def _parse_site_string(site_str: str) -> list[tuple[str, int]]:
-    """Parse site like 'A:373-374,379-384' into [(chain, resnum), ...]."""
-    residues = []
+    """Parse site like 'A:373-374,379-384' into [(chain, resnum), ...].
+
+    Delegates to the pipeline's canonical parser. The hand-rolled copy that used
+    to live here was a THIRD implementation of site parsing and got two cases
+    wrong that the canonical one handles:
+      - "A:373-374, 379-384"  — it split on whitespace first, so the part after
+        the space had no chain prefix, failed the regex and was silently
+        DROPPED: 8 requested residues became 2, and the 3D viewer highlighted
+        half the epitope with no error.
+      - "A:11-17,B:119-124"   — the documented multi-chain syntax made it call
+        int("B:119") and raise ValueError, 500-ing the endpoint.
+    """
     if not site_str:
-        return residues
-    for part in site_str.strip().split():
-        m = __import__('re').match(r'^([A-Za-z]):(.+)$', part)
-        if not m:
-            continue
-        chain, ranges = m.group(1), m.group(2)
-        for rng in ranges.split(','):
-            rng = rng.strip()
-            dash = rng.split('-')
-            if len(dash) == 2:
-                for r in range(int(dash[0]), int(dash[1]) + 1):
-                    residues.append((chain, r))
-            elif rng.isdigit():
-                residues.append((chain, int(rng)))
-    return residues
+        return []
+    try:
+        from pocket_utils import parse_site_multichain
+    except ImportError:
+        import sys as _sys
+        from pathlib import Path as _P
+        _pkg = _P(__file__).resolve().parents[2]
+        if str(_pkg) not in _sys.path:
+            _sys.path.insert(0, str(_pkg))
+        from pocket_utils import parse_site_multichain
+    try:
+        return parse_site_multichain(site_str)
+    except Exception:
+        return []
 
 
 @router.get("/{job_id}/site_residues")

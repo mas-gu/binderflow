@@ -12,14 +12,37 @@ _qt_core.QSettings = lambda *a, **k: None
 sys.modules.setdefault("PyQt6", _qt_stub)
 sys.modules.setdefault("PyQt6.QtCore", _qt_core)
 
-from binders_pipeline_env.binder_browser.config import (
-    TOOL_COLORS,
-    TOOL_PREFIXES,
-    DEFAULT_COLUMNS,
-    SCORE_COLUMNS_HIGHER_BETTER,
-    SCORE_COLUMNS_LOWER_BETTER,
-    SCATTER_PRESETS,
-)
+# Import the sibling modules WITHOUT depending on what this directory is called.
+# These used to be absolute `binders_pipeline_env.*` imports, which require both
+# that the repo directory is named exactly `binders_pipeline_env` AND that its
+# parent is on sys.path. `git clone .../binderflow.git` produces `binderflow/`,
+# and there is no setup.py/pyproject.toml to install it — so a fresh clone could
+# not import the web app at all. Prefer the historical path (unchanged behaviour
+# on an existing checkout), then fall back to importing by location.
+def _add_pkg_dir_to_path():
+    pkg_dir = Path(__file__).resolve().parents[1]   # the repo dir, whatever its name
+    if str(pkg_dir) not in sys.path:
+        sys.path.insert(0, str(pkg_dir))
+
+try:
+    from binders_pipeline_env.binder_browser.config import (
+        TOOL_COLORS,
+        TOOL_PREFIXES,
+        DEFAULT_COLUMNS,
+        SCORE_COLUMNS_HIGHER_BETTER,
+        SCORE_COLUMNS_LOWER_BETTER,
+        SCATTER_PRESETS,
+    )
+except ImportError:
+    _add_pkg_dir_to_path()
+    from binder_browser.config import (
+        TOOL_COLORS,
+        TOOL_PREFIXES,
+        DEFAULT_COLUMNS,
+        SCORE_COLUMNS_HIGHER_BETTER,
+        SCORE_COLUMNS_LOWER_BETTER,
+        SCATTER_PRESETS,
+    )
 
 # ---------- paths ----------
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # protein_folding/
@@ -27,7 +50,11 @@ WEB_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = WEB_DIR / "templates"
 STATIC_DIR = WEB_DIR / "static"
 import socket as _socket
-from binders_pipeline_env.config_loader import cfg as _cfg
+try:
+    from binders_pipeline_env.config_loader import cfg as _cfg
+except ImportError:
+    _add_pkg_dir_to_path()
+    from config_loader import cfg as _cfg
 
 _HOST = _socket.gethostname().split(".")[0]
 _SHARED_DIR = Path(_cfg.shared_data_dir)
@@ -51,7 +78,7 @@ CONDA_ENV = os.environ.get("CONDA_PREFIX", _cfg.conda_env("boltz"))
 PYTHON_BIN = sys.executable
 
 # ---------- defaults for launch form ----------
-DEFAULT_TOOLS = ["rfdiffusion", "rfdiffusion3", "boltzgen", "bindcraft", "pxdesign", "proteina", "proteina_complexa"]
+DEFAULT_TOOLS = ["rfdiffusion", "rfdiffusion3", "boltzgen", "bindcraft", "bindcraft2", "pxdesign", "proteina", "proteina_complexa"]
 DEFAULT_MODE = "test"
 DEFAULT_SS_BIAS = "balanced"
 DEFAULT_SCORE_WEIGHTS = "0.3,0.6,0.1"
@@ -68,6 +95,7 @@ TOOL_DESCRIPTIONS = {
     "rfdiffusion3": "All-atom diffusion design (Foundry)",
     "boltzgen": "Diffusion-based binder design",
     "bindcraft": "Iterative AF2-based binder design",
+    "bindcraft2": "BindCraft2 — AF2 design, modality presets",
     "pxdesign": "DiT diffusion + AF2-IG design",
     "proteina": "Flow-based backbone generation",
     "proteina_complexa": "Target-conditioned full-atom design",
@@ -75,7 +103,11 @@ TOOL_DESCRIPTIONS = {
 
 # ── Molecule design constants ────────────────────────────────────────────────
 MOLECULE_SCRIPT = PROJECT_ROOT / "binders_pipeline_env" / "generate_molecules.py"
-MOLECULE_OUTPUTS_BASE = Path("/Colossus/software/webserver/outputs_mol")
+# Resolved from config.yaml (web.outputs_mol_dir), never hardcoded — falls back
+# to a sibling of outputs_dir so a missing key can't reintroduce a dead mount.
+MOLECULE_OUTPUTS_BASE = Path(
+    _cfg.web("outputs_mol_dir", str(OUTPUTS_BASE.parent / "outputs_mol"))
+)
 
 MOLECULE_TOOLS = ["pocketflow", "molcraft", "pocketxmol"]
 MOLECULE_TOOL_COLORS = {
@@ -99,7 +131,10 @@ MOLECULE_SCORE_WEIGHTS = "0.40,0.35,0.15,0.10"  # Vina, QED, SA, PocketFit
 RERANK_MOLECULE_SCRIPT = PROJECT_ROOT / "binders_pipeline_env" / "rerank_molecules.py"
 
 # Available compound libraries — paths resolved from config.yaml (libraries_dir)
-_lib = _cfg.web("libraries_dir")
+# Fallback matters: web() returns "" when the key is absent, and
+# config.example.yaml did not list it — so a fresh clone got an empty library
+# picker with nothing explaining why.
+_lib = _cfg.web("libraries_dir", str(PROJECT_ROOT / "libraries"))
 COMPOUND_LIBRARIES = {
     "": "(none — de novo only)",
     f"{_lib}/zinc_fda_approved/zinc_fda_approved.smi": "ZINC FDA Approved (103 drugs)",

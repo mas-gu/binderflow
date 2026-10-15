@@ -12,12 +12,20 @@ from .models import RunInfo
 def identify_tool(design_id: str) -> str:
     """Identify the tool from a design_id string."""
     design_id_lower = design_id.lower()
+    # A multi-dir rerank prefixes ids with the source directory
+    # ("out_helix__rfdiffusion_0007"), which defeats every startswith() test
+    # below. Strip it before matching.
+    if "__" in design_id_lower:
+        design_id_lower = design_id_lower.rsplit("__", 1)[-1]
     # Try longer prefixes first
     for prefix in sorted(TOOL_PREFIXES.keys(), key=len, reverse=True):
         if design_id_lower.startswith(prefix):
             return TOOL_PREFIXES[prefix]
-    # Fallback: check if tool name is anywhere in design_id
-    for tool_name in ["rfdiffusion", "boltzgen", "bindcraft", "pxdesign",
+    # Fallback: check if tool name is anywhere in design_id. LONGEST FIRST —
+    # "rfdiffusion3_0013" contains "rfdiffusion", so with rfdiffusion3 missing
+    # (or listed later) every RFdiffusion3 design was mislabelled "rfdiffusion".
+    for tool_name in ["rfdiffusion3", "rfdiffusion", "boltzgen",
+                      "bindcraft2", "bindcraft", "pxdesign",
                       "proteina_complexa", "proteina",
                       "pocketflow", "molcraft", "pocketxmol",
                       "pocket2mol", "decompdiff", "library"]:
@@ -105,9 +113,17 @@ def load_rankings(csv_path: Path) -> pd.DataFrame:
     """Load a full rankings CSV and add derived columns."""
     df = pd.read_csv(csv_path)
 
-    # Add tool column from design_id
+    # Derive the tool ONLY when the pipeline did not record one. This used to be
+    # unconditional, overwriting the authoritative `tool` column from
+    # rankings.csv — and identify_tool() maps every library source to the generic
+    # "library", so a molecule run's 7 distinct libraries collapsed into one.
     if "design_id" in df.columns:
-        df["tool"] = df["design_id"].apply(identify_tool)
+        if "tool" not in df.columns:
+            df["tool"] = df["design_id"].apply(identify_tool)
+        else:
+            _missing = df["tool"].isna() | (df["tool"].astype(str).str.strip() == "")
+            if _missing.any():
+                df.loc[_missing, "tool"] = df.loc[_missing, "design_id"].apply(identify_tool)
 
     # Ensure numeric columns are numeric
     numeric_cols = [
@@ -117,6 +133,8 @@ def load_rankings(csv_path: Path) -> pd.DataFrame:
         "rosetta_sc", "rosetta_hbonds", "rosetta_dsasa",
         "binder_helix_frac", "binder_sheet_frac", "binder_loop_frac",
         "bg_design_to_target_iptm", "bc_i_ptm", "bc_dg", "bc_binder_plddt",
+        "bc2_i_ptm", "bc2_i_pdae", "bc2_i_pae", "bc2_plddt",
+        "bc2_interface_buriedarea", "bc2_hotspot_contact_fraction",
         "px_iptm", "px_plddt", "pc_iptm", "pc_plddt", "pc_sc",
         "site_interface_fraction", "site_contact_fraction",
         "site_centroid_dist_CA", "site_centroid_dist_heavy", "site_cos_angle",
@@ -150,9 +168,13 @@ def load_rankings(csv_path: Path) -> pd.DataFrame:
     if "boltz_mean_interface_pae" in df.columns and "boltz_iplddt" in df.columns:
         pae = df["boltz_mean_interface_pae"].clip(lower=0.0)
         iplddt = df["boltz_iplddt"].clip(lower=0.0)
-        # iplddt on 0-100 scale (matching the original pDockQ2 calibration)
-        if iplddt.max() <= 1.5:
-            iplddt = iplddt * 100.0
+        # iplddt on 0-100 scale (matching the original pDockQ2 calibration).
+        # Scale PER ROW, not on the column max: generate-written rows are 0-100
+        # while rerank-written rows were 0-1 until 2026-09-29, so a merged or
+        # historical file contains BOTH. A column-max test sees >1.5 and leaves
+        # every 0-1 row unscaled, giving them a pDockQ computed from an iPLDDT of
+        # ~0.9 instead of ~90.
+        iplddt = iplddt.where(iplddt > 1.5, iplddt * 100.0)
         d0 = 10.0
         pae_factor = 1.0 / (1.0 + (pae / d0) ** 2)
         x = pae_factor * iplddt
@@ -164,9 +186,13 @@ def load_rankings(csv_path: Path) -> pd.DataFrame:
         if len(valid) > 0:
             t1 = valid.quantile(0.925)
             t2 = valid.quantile(0.75)
+            # A NaN combined_score means the design was never ranked (filtered
+            # out, or missing a scoring term) — it is NOT "Tier 3", which reads
+            # as "ranked, and poor". Give it no tier so the browser can show it
+            # as unranked instead of burying it among genuinely weak designs.
             derived["tier"] = df["combined_score"].apply(
-                lambda x: 1 if pd.notna(x) and x >= t1 else
-                          (2 if pd.notna(x) and x >= t2 else 3))
+                lambda x: (1 if x >= t1 else (2 if x >= t2 else 3))
+                          if pd.notna(x) else pd.NA)
 
     # Add all derived columns at once
     if derived:

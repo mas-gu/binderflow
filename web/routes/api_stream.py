@@ -30,15 +30,29 @@ async def _tail_log(job_id: str):
         yield "data: Log file not created\n\n"
         return
 
+    # The 0.5 s poll below exists for LOG responsiveness. Job status changes
+    # maybe twice in a run, but the status query ran on every idle pass — and
+    # database.get_db() opens a fresh SQLite connection and issues a PRAGMA each
+    # time, so a single open browser tab drove ~2 connect/PRAGMA/close cycles a
+    # second for the whole run (~36k over 5 hours). It closes properly, so this
+    # was churn rather than a leak. Check status every 4th idle pass (~2 s) and
+    # leave log latency untouched.
+    _idle = 0
+    _STATUS_EVERY = 4
     async with aiofiles.open(log_path, "r") as f:
         while True:
             line = await f.readline()
             if line:
+                _idle = 0
                 # Escape for SSE (multi-line messages need data: prefix per line)
                 for sub in line.rstrip("\n").split("\n"):
                     yield f"data: {sub}\n"
                 yield "\n"
             else:
+                _idle += 1
+                if _idle % _STATUS_EVERY:
+                    await asyncio.sleep(0.5)
+                    continue
                 # Check if job is still running
                 job = await database.get_job(job_id)
                 if job and job["status"] not in ("queued", "running"):

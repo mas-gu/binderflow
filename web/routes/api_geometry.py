@@ -167,6 +167,17 @@ def _find_structure_file(design_id: str, tool: str, out_dir: Path) -> tuple[Opti
                 if design_id in f.stem:
                     return str(f), "native"
 
+    elif tool == "bindcraft2":
+        # BC2 writes accepted complexes as mmCIF under 3_Ranked/; the monomer
+        # re-predictions beside them are the same design, not another one.
+        bc2_dir = out_dir / "bindcraft2" / "bindcraft2_output" / "3_Ranked"
+        if bc2_dir.is_dir():
+            for f in sorted(bc2_dir.glob("*.cif")):
+                if f.stem.endswith("_monomer"):
+                    continue
+                if design_id in f.stem:
+                    return str(f), "native"
+
     elif tool == "boltzgen":
         # Try both directory names (varies by BoltzGen version/settings)
         for subdir_name in ("final_ranked_designs", "final_50_designs", "final_designs"):
@@ -201,6 +212,7 @@ _TOOL_PREFIXES = {
     "rfdiffusion": "rfdiffusion",
     "boltzgen": "boltzgen",
     "bindcraft": "bindcraft",
+    "bindcraft2": "bindcraft2",
     "pxdesign": "pxdesign",
     "proteina_complexa": "proteina_complexa",
     "proteina": "proteina",
@@ -210,6 +222,11 @@ _TOOL_PREFIXES = {
 def _infer_tool(design_id: str) -> str:
     """Infer tool name from design_id prefix (e.g. 'rfdiffusion_0042' -> 'rfdiffusion')."""
     did = design_id.lower()
+    # A multi-dir rerank prefixes ids with the source directory
+    # ("out_helix__rfdiffusion_0007"), which defeats every startswith() test
+    # below. loader.py and generate_binders strip it; these copies did not.
+    if "__" in did:
+        did = did.rsplit("__", 1)[-1]
     # Check longer prefixes first (proteina_complexa before proteina)
     for prefix in sorted(_TOOL_PREFIXES, key=len, reverse=True):
         if did.startswith(prefix):

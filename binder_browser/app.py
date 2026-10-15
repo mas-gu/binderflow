@@ -182,23 +182,23 @@ class MainWindow(QMainWindow):
 
         # Score thresholds (NaN values pass when filter is at default/floor)
         if "combined_score" in df.columns and filters["min_combined"] > -10:
-            mask &= df["combined_score"].fillna(-999) >= filters["min_combined"]
+            mask &= (df["combined_score"].isna() | (df["combined_score"] >= filters["min_combined"]))
         if "boltz_iptm" in df.columns and filters["min_iptm"] > 0:
-            mask &= df["boltz_iptm"].fillna(-999) >= filters["min_iptm"]
+            mask &= (df["boltz_iptm"].isna() | (df["boltz_iptm"] >= filters["min_iptm"]))
         if "esmfold_plddt" in df.columns and filters["min_plddt"] > 0:
-            mask &= df["esmfold_plddt"].fillna(-999) >= filters["min_plddt"]
+            mask &= (df["esmfold_plddt"].isna() | (df["esmfold_plddt"] >= filters["min_plddt"]))
         if "rosetta_dG" in df.columns and filters["max_dg"] < 100:
-            mask &= df["rosetta_dG"].fillna(999) <= filters["max_dg"]
+            mask &= (df["rosetta_dG"].isna() | (df["rosetta_dG"] <= filters["max_dg"]))
         if "boltz_site_mean_pae" in df.columns and filters["max_site_pae"] < 50:
-            mask &= df["boltz_site_mean_pae"].fillna(999) <= filters["max_site_pae"]
+            mask &= (df["boltz_site_mean_pae"].isna() | (df["boltz_site_mean_pae"] <= filters["max_site_pae"]))
 
         # Geometric filters
         if "refolding_rmsd" in df.columns and filters.get("max_rmsd", 20) < 20:
-            mask &= df["refolding_rmsd"].fillna(999) <= filters["max_rmsd"]
+            mask &= (df["refolding_rmsd"].isna() | (df["refolding_rmsd"] <= filters["max_rmsd"]))
         if "site_interface_fraction" in df.columns and filters.get("min_sif", 0) > 0:
-            mask &= df["site_interface_fraction"].fillna(-1) >= filters["min_sif"]
+            mask &= (df["site_interface_fraction"].isna() | (df["site_interface_fraction"] >= filters["min_sif"]))
         if "interface_KE_fraction" in df.columns and filters.get("max_ke", 1) < 1:
-            mask &= df["interface_KE_fraction"].fillna(999) <= filters["max_ke"]
+            mask &= (df["interface_KE_fraction"].isna() | (df["interface_KE_fraction"] <= filters["max_ke"]))
         if filters.get("no_cys", False) and "binder_sequence" in df.columns:
             mask &= ~df["binder_sequence"].fillna("").str.contains("C")
         if filters.get("max_aa", 1) < 1 and "binder_sequence" in df.columns:
@@ -210,7 +210,15 @@ class MainWindow(QMainWindow):
 
         # Tool filter
         if "tool" in df.columns:
-            mask &= df["tool"].isin(filters["active_tools"])
+            # Only filter tools the panel can actually REPRESENT. The checkbox set
+            # is built from TOOL_COLORS (the 8 binder tools), so an unconditional
+            # isin() silently dropped every row of a molecule run — pocketflow,
+            # molcraft, pocketxmol, library_* have no checkbox, so they could never
+            # be selected and the browser rendered 0 rows with no way to recover.
+            # Rows whose tool has no checkbox now always pass.
+            from .config import TOOL_COLORS
+            _selectable = set(TOOL_COLORS)
+            mask &= (~df["tool"].isin(_selectable)) | df["tool"].isin(filters["active_tools"])
 
         # SS bias
         ss = filters.get("ss_bias", "any")

@@ -3,13 +3,21 @@
 from PyQt6.QtCore import QSettings
 
 TOOL_COLORS = {
-    "rfdiffusion": "#E53935",
-    "rfdiffusion3": "#00BCD4",
-    "boltzgen": "#43A047",
-    "bindcraft": "#1E88E5",
-    "pxdesign": "#FB8C00",
-    "proteina": "#8E24AA",
-    "proteina_complexa": "#00897B",
+    # CANONICAL TOOL PALETTE — must stay identical to the copy in
+    # generate_binders.py. These two were SWAPPED for boltzgen/bindcraft
+    # (and differed for both proteina variants) until 2026-09-28, so
+    # dashboard.png and the browser's Scatter/Tools/Radar tabs coloured the same
+    # tool differently IN THE SAME WINDOW (dashboard_viewer.py renders the PNG
+    # next to those tabs). web/config.py re-exports the browser copy, so the web
+    # UI inherited the inversion too.
+    "rfdiffusion":        "#E53935",
+    "rfdiffusion3":       "#00BCD4",
+    "boltzgen":           "#43A047",
+    "bindcraft":          "#1E88E5",
+    "bindcraft2":         "#7CB342",
+    "pxdesign":           "#FB8C00",
+    "proteina":           "#8E24AA",
+    "proteina_complexa":  "#00897B",
 }
 
 # Map design_id prefix to tool name
@@ -21,6 +29,8 @@ TOOL_PREFIXES = {
     "boltzgen_": "boltzgen",
     "bc_": "bindcraft",
     "bindcraft_": "bindcraft",
+    "bc2_": "bindcraft2",
+    "bindcraft2_": "bindcraft2",
     "px_": "pxdesign",
     "pxdesign_": "pxdesign",
     "prot_": "proteina",
@@ -48,6 +58,7 @@ DEFAULT_COLUMNS = [
 SCORE_COLUMNS_HIGHER_BETTER = {
     "combined_score", "boltz_iptm", "boltz_ptm", "boltz_complex_plddt",
     "boltz_binder_plddt", "esmfold_plddt", "bc_i_ptm", "bg_design_to_target_iptm",
+    "bc2_i_ptm", "bc2_i_pdae", "bc2_hotspot_contact_fraction",
     "px_iptm", "px_plddt", "pc_iptm", "pc_plddt", "pc_sc",
     "rosetta_sc", "rosetta_hbonds", "rosetta_dsasa", "rosetta_packstat",
     "binder_helix_frac", "binder_sheet_frac",

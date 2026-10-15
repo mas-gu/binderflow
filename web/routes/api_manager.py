@@ -13,9 +13,33 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 
 from .. import database
-from ..config import OUTPUTS_BASE, HOSTNAME
+from ..config import OUTPUTS_BASE, HOSTNAME, TOOL_PREFIXES
 
 router = APIRouter(prefix="/api/manager", tags=["manager"])
+
+# design_id prefix → tool, longest prefix first. Matching has to be
+# longest-first: "proteina_complexa_0001" starts with both "proteina_" and
+# "proteina_complexa_", and a naive did.split("_")[0] would call it "proteina"
+# while missing "rfdiffusion3_"/"bindcraft2_" entirely.
+_TOOL_PREFIXES_ORDERED = sorted(
+    TOOL_PREFIXES.items(), key=lambda kv: len(kv[0]), reverse=True
+)
+
+
+def _tool_from_design_id(design_id: str) -> str | None:
+    """Infer the tool name from a design_id by longest-prefix match."""
+    did = design_id.strip().lower()
+    if not did:
+        return None
+    # A multi-dir rerank prefixes ids with the source directory
+    # ("out_helix__rfdiffusion_0007"), which defeats every startswith() test
+    # below. loader.py and generate_binders strip it; these copies did not.
+    if "__" in did:
+        did = did.rsplit("__", 1)[-1]
+    for prefix, tool in _TOOL_PREFIXES_ORDERED:
+        if did.startswith(prefix):
+            return tool
+    return None
 
 
 def _safe_path(path_str: str) -> Path:
@@ -47,22 +71,10 @@ def _extract_tools_from_csv(csv_path: Path, max_rows: int = 200) -> tuple[list[s
                     if tool:
                         tools.add(tool)
                     else:
-                        # Try to infer from design_id
-                        did = row.get("design_id", "")
-                        if did:
-                            prefix = did.split("_")[0].lower()
-                            if prefix in ("rf", "rfdiff", "rfdiffusion"):
-                                tools.add("rfdiffusion")
-                            elif prefix in ("bg", "boltzgen"):
-                                tools.add("boltzgen")
-                            elif prefix in ("bc", "bindcraft"):
-                                tools.add("bindcraft")
-                            elif prefix in ("px", "pxdesign"):
-                                tools.add("pxdesign")
-                            elif prefix in ("pn", "proteina"):
-                                tools.add("proteina")
-                            elif prefix in ("pc",):
-                                tools.add("proteina_complexa")
+                        # Try to infer from design_id (longest-prefix match)
+                        inferred = _tool_from_design_id(row.get("design_id", ""))
+                        if inferred:
+                            tools.add(inferred)
     except Exception:
         pass
     return sorted(tools), count
@@ -324,11 +336,22 @@ async def unarchive_job(job_id: str):
 # ---------- Delete ----------
 
 @router.delete("/{job_id}")
-async def delete_job(job_id: str, delete_files: bool = Query(False)):
+async def delete_job(job_id: str, delete_files: bool = Query(False),
+                     force: bool = Query(False)):
     """Delete a job entry from the local DB, optionally remove files."""
     job = await database.get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found in local DB (can only manage local entries)")
+
+    # Never rmtree a directory a pipeline is still writing into. There was no
+    # such guard: deleting a RUNNING job with delete_files=1 destroyed the live
+    # run in place — hours of GPU work — and left the process writing into a
+    # deleted tree. Cancel it first, or pass force=1 deliberately.
+    if job.get("status") == "running" and delete_files and not force:
+        raise HTTPException(
+            409,
+            "Job is still running — cancel it before deleting its files "
+            "(or pass force=1 to delete anyway).")
 
     out_dir = job.get("out_dir", "")
     files_removed = False
@@ -376,6 +399,13 @@ async def bulk_action(req: BulkRequest):
                 await database.update_job(job_id, archived=0)
             elif req.action == "delete":
                 out_dir = job.get("out_dir", "")
+                # The SINGLE delete refuses to rmtree a running job; this bulk
+                # path had no such guard, so a select-all + delete could destroy
+                # a live run mid-flight.
+                if req.delete_files and job.get("status") == "running":
+                    errors.append(f"{job_id}: still running — cancel it before "
+                                  f"deleting its files")
+                    continue
                 if req.delete_files and out_dir:
                     try:
                         safe = _safe_path(out_dir)

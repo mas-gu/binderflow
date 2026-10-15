@@ -193,13 +193,14 @@
                         <tr><td class="text-left py-1 px-2" style="color:#00BCD4">RFdiffusion3</td><td>20 (&times;4)</td><td>100 (&times;4)</td><td>250 (&times;4)</td></tr>
                         <tr><td class="text-left py-1 px-2" style="color:#43A047">BoltzGen</td><td>50</td><td>500</td><td>2,000</td></tr>
                         <tr id="bc-row"><td class="text-left py-1 px-2" style="color:#1E88E5">BindCraft</td><td id="bc-test">5</td><td id="bc-std">10</td><td id="bc-prod">20</td></tr>
+                        <tr id="bc2-row"><td class="text-left py-1 px-2" style="color:#7CB342">BindCraft2</td><td id="bc2-test">5</td><td id="bc2-std">10</td><td id="bc2-prod">20</td></tr>
                         <tr><td class="text-left py-1 px-2" style="color:#FB8C00">PXDesign</td><td>20</td><td>200</td><td>500</td></tr>
                         <tr><td class="text-left py-1 px-2" style="color:#8E24AA">Proteina</td><td>20</td><td>200</td><td>500</td></tr>
                         <tr><td class="text-left py-1 px-2" style="color:#00897B">Proteina Complexa</td><td>20</td><td>200</td><td>500</td></tr>
                     </tbody>
                 </table>
             </div>
-            <p id="bc-note" class="text-xs text-slate-600 mt-1 hidden">* BindCraft count reduced (filters active)</p>
+            <p id="bc-note" class="text-xs text-slate-600 mt-1 hidden">* count reduced (filters active)</p>
         </div>
 
         <!-- Section 3: Generate-only advanced options -->
@@ -243,6 +244,38 @@
                         <option value="peptide">peptide (for peptide binders)</option>
                         <option value="peptide_relaxed">peptide_relaxed (relaxed peptide)</option>
                     </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">BindCraft2 filters</label>
+                    <select name="bindcraft2_filters" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        <option value="no_filters" selected>no_filters (accept all -- default)</option>
+                        <option value="relaxed">relaxed (light quality gate)</option>
+                        <option value="kras_relaxed">kras_relaxed (very relaxed)</option>
+                        <option value="default">default (strict -- may stall)</option>
+                        <option value="peptide">peptide (for peptide binders)</option>
+                        <option value="peptide_relaxed">peptide_relaxed (relaxed peptide)</option>
+                    </select>
+                    <p class="text-xs text-slate-600 mt-1">no_filters also opens BC2's per-stage
+                    i_pTM/pLDDT gates, so no trajectory is cut short.</p>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-500 mb-1">BindCraft2 modality</label>
+                    <select name="bindcraft2_modality" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm">
+                        <option value="binder" selected>binder (de novo miniprotein)</option>
+                        <option value="large_binder">large_binder</option>
+                        <option value="peptide">peptide (12-25 aa)</option>
+                        <option value="cyclic_peptide">cyclic_peptide</option>
+                        <option value="VHH">VHH (nanobody scaffold)</option>
+                        <option value="scFv">scFv</option>
+                        <option value="Fab">Fab</option>
+                        <option value="ARP">ARP</option>
+                        <option value="homo_oligomer">homo_oligomer</option>
+                        <option value="multidomain">multidomain</option>
+                        <option value="fold_switch">fold_switch</option>
+                        <option value="induced_fit">induced_fit</option>
+                    </select>
+                    <p class="text-xs text-slate-600 mt-1">Scaffolded formats (VHH, scFv, Fab, ARP)
+                    carry their own binder length and ignore the Length field.</p>
                 </div>
             </div>
         </details>
@@ -641,15 +674,25 @@
 
     // ── BindCraft count update ───────────────────────────────────────────────
     function updateBindCraftCounts() {
-        const bcFilter = document.querySelector('select[name="bindcraft_filters"]');
-        if (!bcFilter) return;
-        const active = bcFilter.value && bcFilter.value !== 'no_filters';
-        document.getElementById('bc-test').textContent = active ? '2 *' : '5';
-        document.getElementById('bc-std').textContent = active ? '4 *' : '10';
-        document.getElementById('bc-prod').textContent = active ? '10 *' : '20';
-        document.getElementById('bc-note').classList.toggle('hidden', !active);
+        // Mirrors BINDCRAFT_FILTERED_COUNTS in generate_binders.py, applied
+        // independently per tool because each has its own filter select.
+        let anyActive = false;
+        for (const [sel, ids] of [['bindcraft_filters',  ['bc-test', 'bc-std', 'bc-prod']],
+                                  ['bindcraft2_filters', ['bc2-test', 'bc2-std', 'bc2-prod']]]) {
+            const el = document.querySelector(`select[name="${sel}"]`);
+            if (!el) continue;
+            const active = el.value && el.value !== 'no_filters';
+            anyActive = anyActive || active;
+            const full = ['5', '10', '20'], cut = ['2 *', '4 *', '10 *'];
+            ids.forEach((id, i) => {
+                const cell = document.getElementById(id);
+                if (cell) cell.textContent = active ? cut[i] : full[i];
+            });
+        }
+        document.getElementById('bc-note')?.classList.toggle('hidden', !anyActive);
     }
     document.querySelector('select[name="bindcraft_filters"]')?.addEventListener('change', updateBindCraftCounts);
+    document.querySelector('select[name="bindcraft2_filters"]')?.addEventListener('change', updateBindCraftCounts);
     updateBindCraftCounts();
 
     // ── Project selector toggle ──────────────────────────────────────────────
@@ -736,6 +779,8 @@
 
             // BindCraft filters
             formData.append('bindcraft_filters', form.bindcraft_filters.value);
+            formData.append('bindcraft2_filters', form.bindcraft2_filters.value);
+            formData.append('bindcraft2_modality', form.bindcraft2_modality.value);
 
             // Advanced options
             ['max_site_dist', 'min_site_fraction', 'filter_site_pae', 'esmfold_plddt_threshold'].forEach(field => {
@@ -822,6 +867,10 @@
             });
             const bcf = form.bindcraft_filters.value;
             if (bcf && bcf !== 'no_filters') parts.push('--bindcraft_filters ' + bcf);
+            const bcf2 = form.bindcraft2_filters.value;
+            if (bcf2 && bcf2 !== 'no_filters') parts.push('--bindcraft2_filters ' + bcf2);
+            const mod2 = form.bindcraft2_modality.value;
+            if (mod2 && mod2 !== 'binder') parts.push('--bindcraft2_modality ' + mod2);
 
             out.textContent = 'CUDA_VISIBLE_DEVICES=' + form.gpu_id.value + ' \\\n  ' + parts.join(' \\\n  ');
         }

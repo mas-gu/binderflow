@@ -33,6 +33,16 @@
     let siteCentroid3 = null;               // site centroid as Vector3
     let boundingRadius = 20;
 
+    // Browser-side SS filter vocabulary → rerank_binders.py --ss_bias choices
+    // (argparse choices=["beta","helix","balanced"]). 'any' has no CLI
+    // equivalent, so it maps onto the CLI default.
+    const SS_BIAS_TO_CLI = {
+        any: 'balanced',
+        helix: 'helix',
+        sheet: 'beta',
+        balanced: 'balanced',
+    };
+
     // Filter state
     let filters = {
         min_iptm: 0, min_plddt: 0, max_refolding_rmsd: 10,
@@ -976,9 +986,13 @@
         const noCysField = document.querySelector('#rerank-form [name="no_cys"]');
         if (noCysField) noCysField.checked = filters.no_cys;
 
-        // SS bias select
+        // SS bias select.
+        // The live-filter vocabulary (any|helix|sheet|balanced) is NOT the CLI
+        // vocabulary (balanced|helix|beta). Assigning 'any'/'sheet' straight
+        // into the <select> left .value === '' and the job launched with
+        // `--ss_bias ""` → argparse rc=2. Translate instead.
         const ssField = document.querySelector('#rerank-form [name="ss_bias"]');
-        if (ssField) ssField.value = filters.ss_bias;
+        if (ssField) ssField.value = SS_BIAS_TO_CLI[filters.ss_bias] || 'balanced';
     }
 
     // ------------------------------------------------------------------

@@ -1135,6 +1135,10 @@ def _write_molecule_pml(out_dir, copied_sdfs, target_name, pocket_name,
         "# Visualize top molecules in the binding pocket",
         "bg_color white",
         "set ray_shadow, 0",
+        # Mandated session render settings for every .pml/.pse this project builds
+        "set two_sided_lighting, 0",
+        "set specular, 0",
+        "set cartoon_fancy_helices, 1",
         "",
     ]
 
@@ -1168,7 +1172,13 @@ def _write_molecule_pml(out_dir, copied_sdfs, target_name, pocket_name,
     for i, (sdf_name, d) in enumerate(copied_sdfs):
         obj = Path(sdf_name).stem
         tool = d.get("tool", d.get("design_id", "").split("_")[0])
-        color = tool_colors.get(tool, "green")
+        # library_* prefixed tools (library_drugbank, library_chembl, ...) are not
+        # literal keys in tool_colors, so they fell through to the "green"
+        # default while the legend printed "orange = Library hits". Resolve the
+        # prefix the same way _tool_color() does for the dashboard.
+        color = tool_colors.get(tool)
+        if color is None:
+            color = tool_colors["library"] if str(tool).startswith("library") else "green"
         score = d.get("combined_score", 0)
         qed = d.get("qed", 0)
         smiles = d.get("smiles", "")
@@ -1281,7 +1291,13 @@ Examples:
             library_paths.append(lp)
 
     # If --library provided without explicit --tools, skip de novo
-    tools_explicitly_set = any(a in sys.argv for a in ("--tools",))
+    # argparse accepts BOTH "--tools x" and "--tools=x". Testing membership
+    # only matched the space form, so `--library L --tools=pocketflow` looked
+    # like the user had NOT asked for de novo design and silently set tools=[] —
+    # the library was screened and the requested generator never ran, with
+    # nothing said about it.
+    tools_explicitly_set = any(a == "--tools" or a.startswith("--tools=")
+                               for a in sys.argv)
     if library_paths and not tools_explicitly_set:
         tools = []
     else:
@@ -1514,6 +1530,16 @@ Examples:
         log(f"  top_molecules/  — top {min(args.top_n, len(ranked))} SDFs + SMILES")
         log(f"  dashboard.png   — summary plot")
     log(f"  pocket/         — extracted pocket PDB + center info")
+
+    # Machine-readable outcome + a real exit code (0 clean / 3 nothing ranked /
+    # 4 partial). This script used to always exit 0 with no status file, so a
+    # caller could not distinguish success from total tool failure.
+    from mol_scoring import write_mol_status_json
+    _rc = write_mol_status_json(Path(out_dir) / "status.json", args,
+                                tool_results, all_molecules, ranked,
+                                "generate_molecules.py")
+    log(f"  status.json     — machine-readable run outcome (exit {_rc})")
+    sys.exit(_rc)
 
 
 if __name__ == "__main__":
